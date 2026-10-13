@@ -1,0 +1,29 @@
+[package]
+name = "wycca-cli"
+description = "wycca command line renderer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wycca"
+path = "src/main.rs"
+
+[dependencies]
+wycca-core = { workspace = true }
+# The core does civil-calendar maths on a wall clock timestamp; the CLI is the one
+# that decides *which* wall clock, so `clock` lives here and not in the core.
+chrono = { workspace = true, features = ["clock"] }
+# YAML only for the CLI: it is the only place a person hand-writes a config, and
+# only there do comments earn their keep. The core stays JSON so the browser and
+# the widget have exactly one format to implement.
+# serde_yaml is deprecated upstream; serde_yml is the maintained fork.
+serde_yml = { version = "0.0.13", optional = true }
+resvg = { version = "0.48", optional = true }
+# Same crate resvg re-exports; resvg alone does not turn on PNG encoding.
+tiny-skia = { version = "0.12", features = ["png-format"], optional = true }
+
+[features]
+default = ["png", "yaml"]
+png = ["dep:resvg", "dep:tiny-skia"]
+yaml = ["dep:serde_yml"]

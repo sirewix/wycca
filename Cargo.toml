@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = ["crates/wycca-core", "crates/wycca-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# No `clock` feature: nothing in the core may ask the system what time it is, the
+# timestamp is always passed in. Keeps the core wasm-buildable and testable.
+# `serde` is for NaiveDate, so a day can be written as "2026-01-01" in a config.
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+wycca-core = { path = "crates/wycca-core" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

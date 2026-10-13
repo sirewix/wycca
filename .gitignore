@@ -1,0 +1,9 @@
+/target
+/result
+
+# Yours, not the project's: a config with your location in it, and the calendars
+# you point --events at. Fetch it again with:
+#   curl -o holidays-kz.ics "https://calendar.google.com/calendar/ical/en-gb.kz%23holiday%40group.v.calendar.google.com/public/basic.ics"
+/wycca.yaml
+/holidays-*.ics
+*.png

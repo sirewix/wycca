@@ -1,0 +1,20 @@
+{
+  "size": 2048,
+  "theme": "dark",
+  "spacing": 0.45,
+  "outer_radius": 0.9,
+  "location": { "lat": 51.17, "lon": 71.45 },
+  "font": { "family": "DejaVu Sans", "size": 0.016 },
+  "rings": [
+    { "type": "hour24", "thickness": 0.008, "labels": true, "label_major_only": true, "major_every": 6 },
+    { "type": "interval", "thickness": 0.014, "every": "1d" },
+    { "type": "week", "thickness": 0.07 },
+    { "type": "interval", "thickness": 0.012, "every": "2w", "labels": true,
+      "markers": [
+        { "at_ms": 1767225600000, "label": "sprint" },
+        { "at_ms": 1768953600000, "label": "demo" }
+      ]
+    },
+    { "type": "year", "thickness": 0.14, "month_labels": true, "year_events": true, "event_labels": true }
+  ]
+}
