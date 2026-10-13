@@ -7,3 +7,5 @@
 /wycca.yaml
 /holidays-*.ics
 *.png
+/web/wycca.wasm.js
+/web/wycca.wasm

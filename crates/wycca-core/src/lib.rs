@@ -9,6 +9,7 @@ mod geom;
 mod rings;
 pub mod sun;
 mod svg;
+pub mod ui;
 
 pub use config::{
     Config, Font, HourRing, IntervalRing, Location, Marker, MonthRing, Overrides, Palette,
@@ -19,11 +20,8 @@ pub use svg::Svg;
 
 use chrono::DateTime;
 
-/// The only place allowed to ask the system what time it is.
-#[cfg(target_arch = "wasm32")]
-pub use ffi::now_ms;
-
-/// Milliseconds since the unix epoch.
+/// The only place allowed to ask the system what time it is. wasm has no clock
+/// to ask — the caller passes `t_ms` in, like the CLI does.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -86,6 +84,7 @@ pub fn parse(json: &str) -> Result<Config, serde_json::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Location;
 
     #[test]
     fn rendering_is_a_pure_function_of_config_and_time() {
@@ -106,5 +105,40 @@ mod tests {
     fn background_none_is_transparent() {
         let cfg: Config = serde_json::from_str(r#"{"background":"none"}"#).unwrap();
         assert!(!render(&cfg, 0).contains("<rect"));
+    }
+
+    /// What the browser keeps in local storage is the serialised config, so the
+    /// round trip through JSON has to be lossless or a saved setting dies quietly.
+    #[test]
+    fn a_config_survives_the_json_round_trip_the_page_stores() {
+        let cfg = Config {
+            location: Some(Location {
+                lat: 51.0,
+                lon: 71.4,
+            }),
+            utc_offset_ms: Some(18_000_000),
+            ..Default::default()
+        };
+        let bytes = serde_json::to_string(&cfg).unwrap();
+        let back = parse(&bytes).unwrap();
+        assert_eq!(
+            render(&back, 1_800_000_000_000),
+            render(&cfg, 1_800_000_000_000)
+        );
+    }
+
+    /// `reversed` has to reach every angle of a ring, not most of them.
+    #[test]
+    fn reversing_a_ring_changes_what_it_draws() {
+        let t = 1_800_000_000_000;
+        for ring in ["month", "week", "year"] {
+            let plain: Config =
+                serde_json::from_str(&format!(r#"{{"rings":[{{"type":"{ring}"}}]}}"#)).unwrap();
+            let flipped: Config = serde_json::from_str(&format!(
+                r#"{{"rings":[{{"type":"{ring}","reversed":true}}]}}"#
+            ))
+            .unwrap();
+            assert_ne!(render(&plain, t), render(&flipped, t), "{ring}");
+        }
     }
 }

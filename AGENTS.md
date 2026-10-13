@@ -10,8 +10,10 @@ eventually a browser page and an Android widget.
   clock** timestamp, not an instant. Same config plus same timestamp gives the same
   bytes; there is a test for exactly that. Everything else follows from this rule:
   the CLI, the browser and the widget all call the same code.
-- **`now_ms()` is the only clock read**, and on wasm32 it is an extern `Date.now`.
-  Nothing else may ask the system what time it is.
+- **`now_ms()` is the only clock read, and it is native-only.** wasm32 has no clock
+  we can import without linking an undefined symbol, so every caller passes `t_ms`
+  in — the browser sends `Date.now() + utc_offset_ms`, the CLI sends the local wall
+  clock. Nothing else may ask the system what time it is.
 - **The timezone lives in the config, not the core.** `Config::utc_offset_ms` is the
   seam. The CLI fills it from `Local::now().offset().local_minus_utc()` — *not* the
   difference of two timestamps, which is always zero because they are the same
@@ -29,6 +31,11 @@ eventually a browser page and an Android widget.
   second renderer means somebody wrote the wrong thing.
 - **`Svg::line` exists because a fill-only `M..L` renders as nothing.** Ticks, hands
   and markers are strokes. Use the right one.
+- **The config UI is described by the core, never implemented by it.** `ui.rs`
+  emits sections, fields and ranges as JSON; the browser and the widget render
+  that with their own widgets. Two UIs, one description. The only thing tying them
+  together is the dotted key strings, and two tests in `ui.rs` check every one of
+  them against `Config`.
 
 ## Layout
 
@@ -40,8 +47,11 @@ crates/wycca-core/   config, geometry, SVG, solar maths, .ics — all pure
   svg.rs      the writer
   sun.rs      equinoxes/solstices (Meeus) and sunrise/sunset (NOAA)
   events.rs   whole-day events out of an .ics feed
+  ui.rs       the config form, as data: sections and fields, no widgets
   ffi.rs      C ABI for the browser; compiles natively so it can be tested
 crates/wycca-cli/   flags, resvg PNG, YAML, `feh`
+web/          index.html + ui.js, the only hand-written page; build.sh emits
+              wycca.wasm.js beside them
 ```
 
 ## Rings
@@ -61,8 +71,9 @@ rings together. Setting a ring's `radius` pins it and skips the layout.
   month rings, which run counter-clockwise. Convert with `geom::rad`.
 - Sizes are fractions of half the canvas, never pixels.
 - Colour meanings are fixed: `accent` means **now**, `solar` means **the sun**
-  (sunrise, sunset, equinoxes, solstices), `weekend` means **not working**. Nothing
-  else may borrow those.
+  (sunrise, sunset, equinoxes, solstices), `weekend` means **not working**, and
+  `night` is whatever the background is not. Nothing else may borrow those.
+  Every event is `weekend` red, free or busy; the mark's length is what says which.
 - `deny_unknown_fields` on every config struct: a typo must be a parse error.
 - Everything time-of-day on a ring sweeps continuously. `hours_into_day` is the
   helper. Do not reintroduce integer clipping.
@@ -78,6 +89,13 @@ nix develop -c cargo fmt
 nix run . -- -c wycca.yaml --events holidays-kz.ics --png wall.png
 wycca -a 2026-10-13T14:30:00+02:00   # deterministic, for eyeballing
 wycca -f                              # render a PNG and open it in feh
+```
+
+The browser page is a file, not a server. Open it directly:
+
+```sh
+nix develop -c web/build.sh   # cargo -> base64 -> web/wycca.wasm.js
+xdg-open web/index.html       # or file://... in any browser, offline
 ```
 
 Verify by **probing the rendered PNG**, not by looking at the SVG: sample the pixel
@@ -115,14 +133,36 @@ there do comments earn their keep.
 - **No gradients.** SVG has no conic gradient, and support is patchy in `resvg` and
   `android.graphics.SvgPicture`. The day-length-brightness idea on the year ring
   should be ~365 flat day-wedges instead.
+- **The wasm is fetched, with a base64 copy for `file://`.** `build.sh` emits both
+  `wycca.wasm` and `wycca.wasm.js`; the page tries `fetch` and falls back to the
+  inline one, so there is no build flag and deploying is copying the directory.
+  The base64 copy is also the whole reason there is no bundler, no node and no
+  wasm-bindgen, and the whole reason the timestamp is a parameter: an imported
+  `Date.now` is an undefined symbol `wasm-ld` will not link.
+- **`reversed` goes through `turn()`, never into the geometry.** Every angle in a
+  ring is worked out the ring's natural way round and passed through one helper,
+  so flipping a ring cannot be half-applied. A test renders each reversible ring
+  both ways and compares.
+- **`<input type="color">`, not a colourpicker from a CDN.** The page has to work
+  offline from a file, and the widget has no DOM at all; the core already reads
+  `#rrggbb`, so nothing needs to understand a colour space.
+- **The timezone picker is platform glue, not part of the form.** Resolving
+  `Europe/Almaty` to an offset needs a tz database and `chrono-tz` is banned, so
+  `ui.js` reads `Intl.supportedValuesOf("timeZone")` and recomputes the offset each
+  frame (which is also how daylight saving follows). Android will do the same with
+  `TimeZone`. Fifteen lines per platform beats the dependency.
+- **A new ring arrives through `wycca_ring`, not as a half-written object.** The
+  form says which controls a ring type has, not what they start at, so the UI asks
+  the core for a `Default` and never invents a value. The same goes for `.ics`:
+  `wycca_events` runs the parser the CLI runs, so the page and `wycca --events`
+  can never disagree about what a holiday is.
 
 ## Not built yet
 
-Browser app (wasm build; the target needs `rust-overlay`, nixpkgs has no
-`wasm32-unknown-unknown` std), Android widget (`cargo-ndk`, geometry in Rust, draw
-in your own process and hand the launcher a `Bitmap`), lunar months (1900–2100
-new-moon table; no maintained crate exists), day-length wedges, subnational
-holidays, `RRULE`.
+Android widget (`cargo-ndk`, geometry in Rust, draw in your own process and hand
+the launcher a `Bitmap`), editing `interval.markers` in the page, exporting a
+config file, lunar months (1900–2100 new-moon table; no maintained crate exists),
+day-length wedges, subnational holidays, `RRULE`.
 
 ## Commits
 

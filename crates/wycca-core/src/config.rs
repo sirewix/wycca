@@ -12,8 +12,19 @@ pub enum Theme {
     Light,
 }
 
+impl Theme {
+    /// The other half of `#[serde(rename_all = "snake_case")]`, spelled out so the
+    /// form can key the resolved palettes by name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Light => "light",
+        }
+    }
+}
+
 /// Winter, spring, summer, autumn.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Palette {
     pub background: String,
     pub foreground: String,
@@ -28,36 +39,51 @@ pub struct Palette {
     pub week_marks: String,
     /// Month rules and anything else drawn *on* a light season colour.
     pub border: String,
+    /// The dark hours on the hour ring: white on a dark wallpaper, black on a light
+    /// one, because "night" is whatever the background is not.
+    pub night: String,
     pub seasons: [String; 4],
 }
 
 impl Palette {
     pub fn resolve(theme: Theme, over: &Overrides) -> Self {
-        let (background, foreground, muted, accent, solar, weekend, week_marks, border, seasons) =
-            match theme {
-                Theme::Dark => (
-                    "#0e1116",
-                    "#e8e6e1",
-                    "#39404d",
-                    "#ff9f1c",
-                    "#4cc9f0",
-                    "#c1121f",
-                    "#e63946",
-                    "#12100e",
-                    ["#cfe0f3", "#63b862", "#e0c56e", "#c08552"],
-                ),
-                Theme::Light => (
-                    "#f4f1ea",
-                    "#1b1b1b",
-                    "#d5cec1",
-                    "#d62828",
-                    "#0a6c8f",
-                    "#e63946",
-                    "#c1121f",
-                    "#1b1b1b",
-                    ["#7fa8d0", "#3f9147", "#d9a441", "#a8682f"],
-                ),
-            };
+        let (
+            background,
+            foreground,
+            muted,
+            accent,
+            solar,
+            weekend,
+            week_marks,
+            border,
+            night,
+            seasons,
+        ) = match theme {
+            Theme::Dark => (
+                "#0e1116",
+                "#e8e6e1",
+                "#39404d",
+                "#ff9f1c",
+                "#4cc9f0",
+                "#c1121f",
+                "#e63946",
+                "#12100e",
+                "#e8e6e1",
+                ["#cfe0f3", "#63b862", "#e0c56e", "#c08552"],
+            ),
+            Theme::Light => (
+                "#f4f1ea",
+                "#1b1b1b",
+                "#d5cec1",
+                "#d62828",
+                "#0a6c8f",
+                "#e63946",
+                "#c1121f",
+                "#1b1b1b",
+                "#1b1b1b",
+                ["#7fa8d0", "#3f9147", "#d9a441", "#a8682f"],
+            ),
+        };
         Self {
             background: over.background.clone().unwrap_or_else(|| background.into()),
             foreground: over.foreground.clone().unwrap_or_else(|| foreground.into()),
@@ -67,6 +93,7 @@ impl Palette {
             weekend: over.weekend.clone().unwrap_or_else(|| weekend.into()),
             week_marks: over.week_marks.clone().unwrap_or_else(|| week_marks.into()),
             border: over.border.clone().unwrap_or_else(|| border.into()),
+            night: over.night.clone().unwrap_or_else(|| night.into()),
             seasons: over.seasons.clone().unwrap_or(seasons.map(String::from)),
         }
     }
@@ -84,6 +111,7 @@ pub struct Overrides {
     pub weekend: Option<String>,
     pub week_marks: Option<String>,
     pub border: Option<String>,
+    pub night: Option<String>,
     pub seasons: Option<[String; 4]>,
 }
 
@@ -267,6 +295,8 @@ pub struct HourRing {
     pub hand_dot: bool,
     /// Sunrise and sunset marks, when the config has a `location`.
     pub sun: bool,
+    /// Fill the hours between sunset and sunrise, in `Palette::night`.
+    pub night: bool,
 }
 
 impl Default for HourRing {
@@ -283,6 +313,7 @@ impl Default for HourRing {
             hand_inner: 0.0,
             hand_dot: true,
             sun: true,
+            night: false,
         }
     }
 }
@@ -297,6 +328,8 @@ pub struct WeekRing {
     /// Monday at the top unless the ring is rotated.
     pub monday_at_top: bool,
     pub today_marker: bool,
+    /// Run the week anticlockwise instead of clockwise.
+    pub reversed: bool,
 }
 
 impl Default for WeekRing {
@@ -307,6 +340,7 @@ impl Default for WeekRing {
             offset_deg: 0.0,
             monday_at_top: true,
             today_marker: true,
+            reversed: false,
         }
     }
 }
@@ -319,9 +353,15 @@ pub struct MonthRing {
     pub radius: Option<f64>,
     pub thickness: f64,
     pub offset_deg: f64,
+    /// A tick on every day of the year, so the current month is a run of marks.
+    pub day_ticks: bool,
+    /// Weekend days, in the weekend red. Long ticks, so a week reads at a glance.
+    pub weekends: bool,
     /// The elapsed part of the current month is drawn brighter than the rest.
     pub progress: bool,
     pub today_marker: bool,
+    /// Run the year clockwise instead of anticlockwise.
+    pub reversed: bool,
 }
 
 impl Default for MonthRing {
@@ -330,8 +370,11 @@ impl Default for MonthRing {
             radius: None,
             thickness: 0.045,
             offset_deg: 0.0,
+            day_ticks: false,
+            weekends: true,
             progress: true,
             today_marker: true,
+            reversed: false,
         }
     }
 }
@@ -353,6 +396,8 @@ pub struct YearRing {
     pub events: bool,
     pub event_labels: bool,
     pub today_marker: bool,
+    /// Run the seasons clockwise instead of anticlockwise.
+    pub reversed: bool,
 }
 
 impl Default for YearRing {
@@ -368,6 +413,7 @@ impl Default for YearRing {
             events: true,
             event_labels: true,
             today_marker: true,
+            reversed: false,
         }
     }
 }
@@ -386,6 +432,8 @@ pub struct IntervalRing {
     pub progress: bool,
     pub markers: Vec<Marker>,
     pub labels: bool,
+    /// Run the cycle anticlockwise instead of clockwise.
+    pub reversed: bool,
 }
 
 impl Default for IntervalRing {
@@ -402,6 +450,7 @@ impl Default for IntervalRing {
             progress: true,
             markers: Vec::new(),
             labels: false,
+            reversed: false,
         }
     }
 }

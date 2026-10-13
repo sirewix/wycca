@@ -46,18 +46,22 @@
             program = "${wycca}/bin/wycca";
           };
 
-devShells.default = pkgs.mkShell {
-            packages = [
-              pkgs.cargo
-              pkgs.rustc
-              pkgs.rustfmt
-              pkgs.clippy
-              pkgs.rust-analyzer
-              # The spec's wallpaper story is `wycca --png && feh --bg-fill`.
-              pkgs.feh
-              # resvg finds no system fonts in a nix shell, so --png needs one.
-              pkgs.dejavu_fonts
-            ];
+        devShells.default = pkgs.mkShell {
+          packages = [
+            pkgs.cargo
+            pkgs.rustc
+            pkgs.rustfmt
+            pkgs.clippy
+            pkgs.rust-analyzer
+            # The spec's wallpaper story is `wycca --png && feh --bg-fill`.
+            pkgs.feh
+            # resvg finds no system fonts in a nix shell, so --png needs one.
+            pkgs.dejavu_fonts
+            # wasm32-unknown-unknown std ships with nixpkgs rustc, but the linker
+            # that turns .o into a .wasm does not: rustc looks for `wasm-ld` on
+            # PATH and this is the only place it comes from.
+            pkgs.lld
+          ];
             # resvg's fontdb has nothing to scan in a nix shell; hand it a font file
             # explicitly instead of depending on fontconfig paths.
             WYCCA_FONT = "${pkgs.dejavu_fonts}/share/fonts/truetype/DejaVuSans.ttf";

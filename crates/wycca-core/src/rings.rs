@@ -7,7 +7,7 @@ use chrono::{DateTime, Datelike, Months, NaiveDate, NaiveTime, TimeZone, Timelik
 use crate::{
     config::{HourRing, IntervalRing, Location, MonthRing, Palette, RingSpec, WeekRing, YearRing},
     events::Kind,
-    geom::{polar, rad, radial, sector},
+    geom::{polar, rad, radial, sector, turn},
     sun,
     svg::Svg,
 };
@@ -211,6 +211,22 @@ fn month(svg: &mut Svg, r: &MonthRing, band: &Band, ctx: &Ctx) {
             &ctx.palette.muted,
         );
         day += days_of_month(year, m);
+
+        // Holiday sectors within this month.
+        let month_start_day = day - days_of_month(year, m);
+        let month_end_day = day;
+        for d in month_start_day..month_end_day {
+            let d_naive = NaiveDate::from_ymd_opt(year, 1, 1).unwrap_or_default() + chrono::Duration::days(d);
+            let has_event = ctx.events.iter().any(|e| e.date == d_naive);
+            if has_event {
+                let day_angle = turn(r.reversed, rad(r.offset_deg - (d as f64 / total as f64) * 360.0));
+                let next_day_angle = turn(r.reversed, rad(r.offset_deg - ((d + 1) as f64 / total as f64) * 360.0));
+                svg.path(
+                    &sector(cx, cy, r_in, r_out, day_angle, next_day_angle),
+                    &ctx.palette.weekend,
+                );
+            }
+        }
     }
 
     let now = rad(r.offset_deg + year_progress(ctx.now));
