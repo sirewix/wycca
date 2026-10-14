@@ -12,8 +12,7 @@ mod svg;
 pub mod ui;
 
 pub use config::{
-    Config, Font, HourRing, IntervalRing, Location, Marker, MonthRing, Overrides, Palette,
-    RingSpec, Span, Theme, Unit, WeekRing, YearRing,
+    Config, EventStyle, Font, Layers, Location, Overrides, Palette, Ring, Scale, Theme,
 };
 pub use rings::{Band, Ctx};
 pub use svg::Svg;
@@ -44,13 +43,31 @@ pub fn layout(cfg: &Config) -> Vec<Band> {
         .enumerate()
         .map(|(i, ring)| {
             let t = ((i + 1) as f64 / n).powf(1.0 + 2.0 * cfg.spacing);
-            let outer = ring.radius().unwrap_or(lo + (hi - lo) * t) * half;
+            let outer = ring.radius.unwrap_or(lo + (hi - lo) * t) * half;
             Band {
-                r_in: (outer / half - ring.thickness()) * half,
+                r_in: (outer / half - ring.thickness) * half,
                 r_out: outer,
             }
         })
         .collect()
+}
+
+/// Sunrise and sunset need a longitude, and a config that only sets a latitude
+/// would otherwise place the Sun on the prime meridian — several hours out. When
+/// longitude is left at zero but a wall-clock offset is known, the offset's
+/// standard meridian is the best guess available: nobody keeps a wall clock
+/// five hours from their own noon, so a non-zero offset with longitude zero is
+/// an unset longitude, not the Gulf of Guinea. A real longitude always wins.
+fn resolve_location(loc: Location, utc_offset_ms: i64) -> Location {
+    if loc.lon != 0.0 {
+        return loc;
+    }
+    // A zone is 15 degrees wide per hour of offset, wrapping at +/-180.
+    let lon = (utc_offset_ms as f64 / 3_600_000.0 * 15.0).rem_euclid(360.0);
+    Location {
+        lat: loc.lat,
+        lon: if lon > 180.0 { lon - 360.0 } else { lon },
+    }
 }
 
 /// Render at `t_ms`, a wall-clock timestamp in milliseconds. Same input, same bytes.
@@ -68,7 +85,9 @@ pub fn render(cfg: &Config, t_ms: u64) -> String {
         half,
         font_size: cfg.font.size * cfg.size as f64,
         utc_offset_ms: cfg.utc_offset_ms.unwrap_or(0),
-        location: cfg.location,
+        location: cfg
+            .location
+            .map(|l| resolve_location(l, cfg.utc_offset_ms.unwrap_or(0))),
         events: &cfg.events,
     };
     for (ring, band) in cfg.rings.iter().zip(layout(cfg)) {
@@ -131,14 +150,16 @@ mod tests {
     #[test]
     fn reversing_a_ring_changes_what_it_draws() {
         let t = 1_800_000_000_000;
-        for ring in ["month", "week", "year"] {
-            let plain: Config =
-                serde_json::from_str(&format!(r#"{{"rings":[{{"type":"{ring}"}}]}}"#)).unwrap();
-            let flipped: Config = serde_json::from_str(&format!(
-                r#"{{"rings":[{{"type":"{ring}","reversed":true}}]}}"#
+        for scale in ["hour24", "week", "year"] {
+            let plain: Config = serde_json::from_str(&format!(
+                r#"{{"rings":[{{"scale":"{scale}","layers":{{"today_marker":true}}}}]}}"#
             ))
             .unwrap();
-            assert_ne!(render(&plain, t), render(&flipped, t), "{ring}");
+            let flipped: Config = serde_json::from_str(&format!(
+                r#"{{"rings":[{{"scale":"{scale}","reversed":true,"layers":{{"today_marker":true}}}}]}}"#
+            ))
+            .unwrap();
+            assert_ne!(render(&plain, t), render(&flipped, t), "{scale}");
         }
     }
 }

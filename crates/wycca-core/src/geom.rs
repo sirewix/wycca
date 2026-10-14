@@ -11,11 +11,7 @@ pub fn rad(deg: f64) -> f64 {
 /// This ensures flipping a ring cannot be half-applied; all angles pass through
 /// this helper so the reversal is complete.
 pub fn turn(reversed: bool, deg: f64) -> f64 {
-    if reversed {
-        -deg
-    } else {
-        deg
-    }
+    if reversed { -deg } else { deg }
 }
 
 /// Point at radius `r` (canvas units) and angle `a`.

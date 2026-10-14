@@ -28,23 +28,24 @@ pub extern "C" fn wycca_form() -> *mut u8 {
     owned(&serde_json::to_string(&crate::ui::form()).unwrap())
 }
 
-/// One ring of `kind` as JSON, with every field filled in from its `Default`. The
-/// form describes a ring type's controls but not their starting values, so adding
-/// a ring goes through here rather than through a half-written object in the UI.
+/// One ring at `scale` as JSON, with every field filled in from
+/// [`crate::Ring::new`]. The form describes a ring's controls but not their
+/// starting values, so adding a ring goes through here rather than through a
+/// half-written object in the UI.
 ///
 /// # Safety
-/// `kind` must point to `len` readable bytes of UTF-8 naming a ring type.
+/// `scale` must point to `len` readable bytes of UTF-8 naming a scale.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn wycca_ring(kind: *const u8, len: usize) -> *mut u8 {
-    let kind = unsafe { std::str::from_utf8(std::slice::from_raw_parts(kind, len)) };
-    let spec = match kind {
-        Ok(kind) => serde_json::from_str::<crate::RingSpec>(kind).map_err(|_| ()),
-        Err(_) => Err(()),
+pub extern "C" fn wycca_ring(scale: *const u8, len: usize) -> *mut u8 {
+    let scale = unsafe { std::str::from_utf8(std::slice::from_raw_parts(scale, len)) };
+    let json = match scale {
+        Ok("hour24") => serde_json::to_string(&crate::Ring::new(crate::Scale::Hour24)).unwrap(),
+        Ok("week") => serde_json::to_string(&crate::Ring::new(crate::Scale::Week)).unwrap(),
+        Ok("month") => serde_json::to_string(&crate::Ring::new(crate::Scale::Month)).unwrap(),
+        Ok("year") => serde_json::to_string(&crate::Ring::new(crate::Scale::Year)).unwrap(),
+        _ => "<ring>unknown scale</ring>".into(),
     };
-    owned(&match spec {
-        Ok(spec) => serde_json::to_string(&spec).unwrap(),
-        Err(()) => "<ring>unknown ring type</ring>".into(),
-    })
+    owned(&json)
 }
 
 /// Every whole-day event in an .ics feed, as a JSON array. The page merges this
@@ -137,7 +138,7 @@ mod tests {
 
     #[test]
     fn render_round_trips_through_the_c_abi() {
-        let json = br#"{"size":256,"rings":[{"type":"week"}]}"#;
+        let json = br#"{"size":256,"rings":[{"scale":"week","layers":{"day_sectors":true}}]}"#;
         let ptr = unsafe { wycca_render(json.as_ptr(), json.len(), 1_800_000_000_000.0) };
         let svg = take(ptr);
         assert!(svg.contains("<path") && svg.contains("width=\"256\""));
@@ -146,21 +147,20 @@ mod tests {
     #[test]
     fn the_page_can_ask_for_a_default_config_a_form_and_a_ring() {
         let config: serde_json::Value = serde_json::from_str(&take(wycca_default())).unwrap();
-        assert_eq!(config["rings"][0]["type"], "hour24");
+        assert_eq!(config["rings"][0]["scale"], "hour24");
 
         let form: serde_json::Value = serde_json::from_str(&take(wycca_form())).unwrap();
         assert!(form["sections"].as_array().unwrap().len() >= 4);
 
-        let kind = br#"{"type":"week"}"#;
         let ring: serde_json::Value =
-            serde_json::from_str(&take(unsafe { wycca_ring(kind.as_ptr(), kind.len()) })).unwrap();
-        assert_eq!(ring["type"], "week");
-        assert_eq!(ring["thickness"], 0.085, "a new ring starts at its Default");
+            serde_json::from_str(&take(wycca_ring(b"week".as_ptr(), 4))).unwrap();
+        assert_eq!(ring["scale"], "week");
+        assert_eq!(ring["thickness"], 0.04, "a new ring starts at its Default");
     }
 
     #[test]
     fn a_bad_config_says_so_in_the_svg() {
-        let json = br#"{"rings":[{"type":"nope"}]}"#;
+        let json = br#"{"rings":[{"scale":"nope"}]}"#;
         let ptr = unsafe { wycca_render(json.as_ptr(), json.len(), 0.0) };
         assert!(take(ptr).contains("<desc>"));
     }

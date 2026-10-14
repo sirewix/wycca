@@ -21,6 +21,13 @@ eventually a browser page and an Android widget.
   and Android `TimeZone.getDefault()`, and both will hand over one integer.
   Do not add `chrono-tz`.
 - **Latitude is config only.** Nothing can discover it. `Config::location`.
+- **Longitude 0 means unset, not the Gulf of Guinea.** Sunrise and sunset are
+  global-instant maths keyed on longitude, so a config with a latitude but no
+  longitude puts the Sun on the prime meridian and the day lands hours off.
+  `resolve_location` fills it from `utc_offset_ms × 15°`, the zone's standard
+  meridian: nobody keeps a wall clock five hours from their own noon, so a
+  non-zero offset with longitude zero is a forgotten setting, not the Atlantic. A
+  real longitude always wins; the guess is only good to the zone meridian anyway.
 - **std, not `no_std`.** `f64::sin` wants `libm`, `format!` wants alloc, and
   wasm32-unknown-unknown has a perfectly good std. The only thing it cannot do is
   read the clock, which we already inject. Revisit only for a microcontroller
@@ -41,8 +48,8 @@ eventually a browser page and an Android widget.
 
 ```
 crates/wycca-core/   config, geometry, SVG, solar maths, .ics — all pure
-  config.rs   the whole schema; every ring type is a struct with a Default
-  rings.rs    one fn per ring type, plus the year/month angle maths
+  config.rs   the whole schema; a ring is a scale plus a bag of layer flags
+  rings.rs    the layers, plus the one angle helper they all run through
   geom.rs     polar -> SVG path data, arcs split at <=180 degrees
   svg.rs      the writer
   sun.rs      equinoxes/solstices (Meeus) and sunrise/sunset (NOAA)
@@ -56,10 +63,15 @@ web/          index.html + ui.js, the only hand-written page; build.sh emits
 
 ## Rings
 
-`hour24`, `week`, `month`, `year`, `interval` (the generic "n x something" ring:
-sprints, release trains). A new ring is a `RingSpec` variant plus a `match` arm in
-`rings::draw`. There is no plugin hook; add one when a second consumer needs to add
-rings without touching `rings.rs`.
+A ring is `Scale` + `Layers`: the scale is the span of time one turn covers
+(`hour24`, `week`, `month`, `year` — the calendar year, so the seasons sit
+symmetric about the cardinal axes and each season holds its three months), the
+layers are flags for what is drawn on it (sectors, ticks, markers, a hand). Every
+angle is a fraction of the scale's current period through one helper, so layers
+can never disagree about a position and `reversed` is applied once. A new thing to
+draw is a new flag in `Layers` plus a block in `rings::draw`; there is no
+per-ring-type code. `Ring::new(scale)` is the only place a ring's starting layers
+are chosen.
 
 Radii come from `layout()`: `r = outer_radius * t^(1 + 2*spacing)` with
 `t = (i+1)/n`. `spacing` is the single slider; `0` is even, `1` squeezes the inner
@@ -67,16 +79,18 @@ rings together. Setting a ring's `radius` pins it and skips the layout.
 
 ## Conventions
 
-- Angles are degrees, `0` at 12 o'clock, positive clockwise, except the year and
-  month rings, which run counter-clockwise. Convert with `geom::rad`.
+- Angles are degrees, `0` at 12 o'clock, positive clockwise, except the year
+  rings, which run counter-clockwise. Convert with `geom::rad`.
 - Sizes are fractions of half the canvas, never pixels.
 - Colour meanings are fixed: `accent` means **now**, `solar` means **the sun**
   (sunrise, sunset, equinoxes, solstices), `weekend` means **not working**, and
-  `night` is whatever the background is not. Nothing else may borrow those.
+  `day`/`night` are the lit and dark halves of the hour ring — each one is the
+  background colour on one theme and the opposite on the other, so the dark half
+  of the clock reads as dark on either. Nothing else may borrow those.
   Every event is `weekend` red, free or busy; the mark's length is what says which.
 - `deny_unknown_fields` on every config struct: a typo must be a parse error.
-- Everything time-of-day on a ring sweeps continuously. `hours_into_day` is the
-  helper. Do not reintroduce integer clipping.
+- Everything time-of-day on a ring sweeps continuously. Angles are fractions of
+  the scale's period, never integer-clipped.
 - Write comments for *why*, never for what.
 
 ## Running it
@@ -152,17 +166,18 @@ there do comments earn their keep.
   frame (which is also how daylight saving follows). Android will do the same with
   `TimeZone`. Fifteen lines per platform beats the dependency.
 - **A new ring arrives through `wycca_ring`, not as a half-written object.** The
-  form says which controls a ring type has, not what they start at, so the UI asks
-  the core for a `Default` and never invents a value. The same goes for `.ics`:
-  `wycca_events` runs the parser the CLI runs, so the page and `wycca --events`
-  can never disagree about what a holiday is.
+  form says which controls a ring has, not what they start at, so the UI asks
+  the core for a `Ring::new(scale)` and never invents a value. The same goes for
+  `.ics`: `wycca_events` runs the parser the CLI runs, so the page and
+  `wycca --events` can never disagree about what a holiday is.
 
 ## Not built yet
 
 Android widget (`cargo-ndk`, geometry in Rust, draw in your own process and hand
-the launcher a `Bitmap`), editing `interval.markers` in the page, exporting a
-config file, lunar months (1900–2100 new-moon table; no maintained crate exists),
-day-length wedges, subnational holidays, `RRULE`.
+the launcher a `Bitmap`), exporting a config file, lunar months (1900–2100
+new-moon table; no maintained crate exists), day-length wedges, subnational
+holidays, `RRULE`, interval rings (a fixed-length scale for sprints and release
+trains; every layer works on one, only the scale is missing).
 
 ## Commits
 

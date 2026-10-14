@@ -1,8 +1,9 @@
 //! Config schema. Everything a ring draws is data; nothing here touches the clock.
 
-use std::{fmt, path::PathBuf, str::FromStr};
+use std::path::PathBuf;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, Utc};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -39,8 +40,12 @@ pub struct Palette {
     pub week_marks: String,
     /// Month rules and anything else drawn *on* a light season colour.
     pub border: String,
-    /// The dark hours on the hour ring: white on a dark wallpaper, black on a light
-    /// one, because "night" is whatever the background is not.
+    /// Daylight hours on the hour ring. On the dark theme this is what makes the
+    /// lit half of the clock visible against a dark wallpaper.
+    pub day: String,
+    /// The dark hours on the hour ring: night is whatever the background is not,
+    /// so on the dark theme it disappears into it and on the light theme it is
+    /// painted dark.
     pub night: String,
     pub seasons: [String; 4],
 }
@@ -56,6 +61,7 @@ impl Palette {
             weekend,
             week_marks,
             border,
+            day,
             night,
             seasons,
         ) = match theme {
@@ -69,6 +75,7 @@ impl Palette {
                 "#e63946",
                 "#12100e",
                 "#e8e6e1",
+                "#0e1116",
                 ["#cfe0f3", "#63b862", "#e0c56e", "#c08552"],
             ),
             Theme::Light => (
@@ -80,6 +87,7 @@ impl Palette {
                 "#e63946",
                 "#c1121f",
                 "#1b1b1b",
+                "#f4f1ea",
                 "#1b1b1b",
                 ["#7fa8d0", "#3f9147", "#d9a441", "#a8682f"],
             ),
@@ -93,6 +101,7 @@ impl Palette {
             weekend: over.weekend.clone().unwrap_or_else(|| weekend.into()),
             week_marks: over.week_marks.clone().unwrap_or_else(|| week_marks.into()),
             border: over.border.clone().unwrap_or_else(|| border.into()),
+            day: over.day.clone().unwrap_or_else(|| day.into()),
             night: over.night.clone().unwrap_or_else(|| night.into()),
             seasons: over.seasons.clone().unwrap_or(seasons.map(String::from)),
         }
@@ -111,6 +120,7 @@ pub struct Overrides {
     pub weekend: Option<String>,
     pub week_marks: Option<String>,
     pub border: Option<String>,
+    pub day: Option<String>,
     pub night: Option<String>,
     pub seasons: Option<[String; 4]>,
 }
@@ -150,309 +160,188 @@ impl Default for Font {
     }
 }
 
-/// A fixed-length span, written `"2w"`, `"90d"`, `"1h"`, bare units mean one of them.
-/// Calendar-accurate units (months, years) are deliberately absent: they have no
-/// fixed length, so an interval ring cannot index them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Span {
-    pub count: u64,
-    pub unit: Unit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Unit {
-    Second,
-    Minute,
-    Hour,
-    Day,
+/// What one turn of a ring covers.
+///
+/// Every angle on a ring is a fraction of its scale's current period, so layers
+/// on one ring — and two rings of the same scale — can never disagree about
+/// where anything sits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Scale {
+    /// The current day, midnight to midnight.
+    Hour24,
+    /// Monday to Monday.
     Week,
+    /// The first of the month to the first of the next.
+    Month,
+    /// The calendar year, January to January, so the seasons sit symmetric
+    /// about the cardinal axes with each season's three months inside its
+    /// quadrant and January at the top.
+    Year,
 }
 
-impl Unit {
-    pub fn millis(self) -> u64 {
+impl Scale {
+    /// +1 runs clockwise, -1 counter-clockwise. Only the year runs backwards, so
+    /// January follows December the way a calendar page reads.
+    pub(crate) fn dir(self) -> f64 {
         match self {
-            Self::Second => 1_000,
-            Self::Minute => 60_000,
-            Self::Hour => 3_600_000,
-            Self::Day => 86_400_000,
-            Self::Week => 604_800_000,
+            Self::Year => -1.0,
+            _ => 1.0,
         }
     }
 
-    fn parse(s: &str) -> Option<Self> {
-        match s {
-            "s" | "sec" | "second" => Some(Self::Second),
-            "m" | "min" | "minute" => Some(Self::Minute),
-            "h" | "hour" => Some(Self::Hour),
-            "d" | "day" => Some(Self::Day),
-            "w" | "week" => Some(Self::Week),
-            _ => None,
+    /// The span of this scale that contains `now`.
+    pub fn period(&self, now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
+        match self {
+            Self::Hour24 => {
+                let midnight = now.date_naive().and_time(NaiveTime::MIN).and_utc();
+                (midnight, midnight + chrono::Duration::days(1))
+            }
+            Self::Week => {
+                let mut monday = now.date_naive().and_time(NaiveTime::MIN).and_utc();
+                while monday.weekday().num_days_from_monday() != 0 {
+                    monday -= chrono::Duration::days(1);
+                }
+                (monday, monday + chrono::Duration::days(7))
+            }
+            Self::Month => {
+                let (y, m) = (now.year(), now.month());
+                (
+                    date(y, m, 1),
+                    if m == 12 {
+                        date(y + 1, 1, 1)
+                    } else {
+                        date(y, m + 1, 1)
+                    },
+                )
+            }
+            Self::Year => (date(now.year(), 1, 1), date(now.year() + 1, 1, 1)),
         }
     }
 }
 
-impl FromStr for Span {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let split = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
-        let (count, unit) = s.split_at(split);
-        let count = if count.is_empty() {
-            1
-        } else {
-            count
-                .parse()
-                .map_err(|_| format!("bad span count in {s:?}"))?
-        };
-        let unit = Unit::parse(unit.trim()).ok_or_else(|| format!("bad span unit in {s:?}"))?;
-        Ok(Self { count, unit })
-    }
+/// How a whole-day event is drawn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventStyle {
+    /// A red day sector, the way the old month ring drew its holidays.
+    Sector,
+    /// A full crossing line for a day off, a short notch for a busy day.
+    #[default]
+    Notch,
 }
 
-impl fmt::Display for Span {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let unit = match self.unit {
-            Unit::Second => "s",
-            Unit::Minute => "m",
-            Unit::Hour => "h",
-            Unit::Day => "d",
-            Unit::Week => "w",
-        };
-        write!(f, "{}{unit}", self.count)
-    }
-}
-
-impl Serialize for Span {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&self.to_string())
-    }
-}
-
-impl<'de> Deserialize<'de> for Span {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        String::deserialize(d)?.parse().map_err(de::Error::custom)
-    }
-}
-
-/// A one-off radial mark on an [`IntervalRing`], by absolute time.
+/// What a ring draws. A ring is these flags; no ring type is special anymore.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct Marker {
-    /// Milliseconds since the unix epoch.
-    pub at_ms: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum RingSpec {
-    Hour24(HourRing),
-    Week(WeekRing),
-    Month(MonthRing),
-    Year(YearRing),
-    Interval(IntervalRing),
-}
-
-impl RingSpec {
-    /// Set to pin the ring to an exact outer radius instead of the layout.
-    pub fn radius(&self) -> Option<f64> {
-        match self {
-            Self::Hour24(r) => r.radius,
-            Self::Week(r) => r.radius,
-            Self::Month(r) => r.radius,
-            Self::Year(r) => r.radius,
-            Self::Interval(r) => r.radius,
-        }
-    }
-
-    pub fn thickness(&self) -> f64 {
-        match self {
-            Self::Hour24(r) => r.thickness,
-            Self::Week(r) => r.thickness,
-            Self::Month(r) => r.thickness,
-            Self::Year(r) => r.thickness,
-            Self::Interval(r) => r.thickness,
-        }
-    }
-}
-
-/// 24 hours over the full circle, not 12. The hand sweeps continuously.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct HourRing {
-    pub radius: Option<f64>,
-    pub thickness: f64,
-    pub offset_deg: f64,
+pub struct Layers {
     pub ticks: bool,
-    /// Draw a longer tick every n hours, and label those only.
-    pub major_every: u32,
-    pub labels: bool,
+    pub tick_labels: bool,
     pub label_major_only: bool,
+    /// A longer tick every n hours; the labelled ones, when `tick_labels`.
+    pub major_every: u32,
     pub hand: bool,
     /// Fraction of the half-canvas the hand starts at. 0 = from the centre.
     pub hand_inner: f64,
     pub hand_dot: bool,
     /// Sunrise and sunset marks, when the config has a `location`.
     pub sun: bool,
-    /// Fill the hours between sunset and sunrise, in `Palette::night`.
+    /// The dark hours, sunset to sunrise, in the night colour.
     pub night: bool,
-}
-
-impl Default for HourRing {
-    fn default() -> Self {
-        Self {
-            radius: None,
-            thickness: 0.012,
-            offset_deg: 0.0,
-            ticks: true,
-            major_every: 6,
-            labels: true,
-            label_major_only: true,
-            hand: true,
-            hand_inner: 0.0,
-            hand_dot: true,
-            sun: true,
-            night: false,
-        }
-    }
-}
-
-/// Week from Monday, weekend in [`Palette::weekend`], today marked.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct WeekRing {
-    pub radius: Option<f64>,
-    pub thickness: f64,
-    pub offset_deg: f64,
-    /// Monday at the top unless the ring is rotated.
-    pub monday_at_top: bool,
-    pub today_marker: bool,
-    /// Run the week anticlockwise instead of clockwise.
-    pub reversed: bool,
-}
-
-impl Default for WeekRing {
-    fn default() -> Self {
-        Self {
-            radius: None,
-            thickness: 0.085,
-            offset_deg: 0.0,
-            monday_at_top: true,
-            today_marker: true,
-            reversed: false,
-        }
-    }
-}
-
-/// The 12 months, proportional to their length, running counter-clockwise like
-/// the year ring so both are read the same way.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct MonthRing {
-    pub radius: Option<f64>,
-    pub thickness: f64,
-    pub offset_deg: f64,
-    /// A tick on every day of the year, so the current month is a run of marks.
-    pub day_ticks: bool,
-    /// Weekend days, in the weekend red. Long ticks, so a week reads at a glance.
+    /// The lit hours, sunrise to sunset, in the day colour.
+    pub day: bool,
+    /// One sector per day, the weekend days in the weekend colour.
+    pub day_sectors: bool,
+    /// The twelve months, each as wide as it is long.
+    pub month_sectors: bool,
+    /// A tick on every day, so a month reads as a run of days.
+    pub day_borders: bool,
+    /// Saturday and Sunday, in the weekend red. Long ticks, so a week reads at
+    /// a glance.
     pub weekends: bool,
-    /// The elapsed part of the current month is drawn brighter than the rest.
-    pub progress: bool,
-    pub today_marker: bool,
-    /// Run the year clockwise instead of anticlockwise.
-    pub reversed: bool,
-}
-
-impl Default for MonthRing {
-    fn default() -> Self {
-        Self {
-            radius: None,
-            thickness: 0.045,
-            offset_deg: 0.0,
-            day_ticks: false,
-            weekends: true,
-            progress: true,
-            today_marker: true,
-            reversed: false,
-        }
-    }
-}
-
-/// The year, counter-clockwise, seasons symmetric about the cardinal axes.
-/// Northern hemisphere months; `offset_deg` rotates the whole thing.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct YearRing {
-    pub radius: Option<f64>,
-    pub thickness: f64,
-    pub offset_deg: f64,
-    pub week_ticks: bool,
+    /// The day-of-month number on every day.
+    pub day_labels: bool,
     pub month_ticks: bool,
+    /// The month number at each month's middle.
     pub month_labels: bool,
+    /// The four seasons, each holding its three months.
+    pub seasons: bool,
+    pub week_ticks: bool,
     /// Equinoxes and solstices, see [`crate::sun`].
     pub year_events: bool,
-    /// Whole-day events from `Config::events`, drawn across the band.
+    /// Whole-day events from `Config::events`.
     pub events: bool,
+    pub event_style: EventStyle,
     pub event_labels: bool,
-    pub today_marker: bool,
-    /// Run the seasons clockwise instead of anticlockwise.
-    pub reversed: bool,
-}
-
-impl Default for YearRing {
-    fn default() -> Self {
-        Self {
-            radius: None,
-            thickness: 0.13,
-            offset_deg: 0.0,
-            week_ticks: true,
-            month_ticks: true,
-            month_labels: true,
-            year_events: true,
-            events: true,
-            event_labels: true,
-            today_marker: true,
-            reversed: false,
-        }
-    }
-}
-
-/// The generic "n x something" ring: a sprint, a release train, a lunar month once
-/// new-moon instants are what feed the markers.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct IntervalRing {
-    pub radius: Option<f64>,
-    pub thickness: f64,
-    pub offset_deg: f64,
-    pub every: Span,
-    /// Shift the cycle by this many millis, so "quarters" can start in February.
-    pub phase_ms: i64,
+    /// The elapsed part of the ring's period, brighter than the rest.
     pub progress: bool,
-    pub markers: Vec<Marker>,
-    pub labels: bool,
-    /// Run the cycle anticlockwise instead of clockwise.
-    pub reversed: bool,
+    pub today_marker: bool,
 }
 
-impl Default for IntervalRing {
-    fn default() -> Self {
+/// One ring: a scale, a place on the canvas, and the layers drawn on it.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ring {
+    /// Pin the ring to an exact outer radius instead of letting `layout()` place it.
+    #[serde(default)]
+    pub radius: Option<f64>,
+    #[serde(default)]
+    pub thickness: f64,
+    #[serde(default)]
+    pub offset_deg: f64,
+    #[serde(default)]
+    pub reversed: bool,
+    pub scale: Scale,
+    #[serde(default)]
+    pub layers: Layers,
+}
+
+impl Ring {
+    /// A fresh ring at `scale`: the geometry every ring shares, plus the layers
+    /// that make the scale worth adding as-is. Everything else is a checkbox.
+    pub fn new(scale: Scale) -> Self {
+        let mut layers = Layers {
+            today_marker: true,
+            ..Default::default()
+        };
+        match scale {
+            Scale::Hour24 => {
+                layers = Layers {
+                    ticks: true,
+                    tick_labels: true,
+                    label_major_only: true,
+                    major_every: 6,
+                    hand: true,
+                    hand_dot: true,
+                    sun: true,
+                    night: true,
+                    day: true,
+                    ..layers
+                };
+            }
+            Scale::Week => layers.day_sectors = true,
+            Scale::Month => {
+                layers.day_borders = true;
+                layers.weekends = true;
+            }
+            Scale::Year => layers.month_sectors = true,
+        }
         Self {
             radius: None,
             thickness: 0.04,
             offset_deg: 0.0,
-            every: Span {
-                count: 1,
-                unit: Unit::Week,
-            },
-            phase_ms: 0,
-            progress: true,
-            markers: Vec::new(),
-            labels: false,
             reversed: false,
+            scale,
+            layers,
         }
     }
+}
+
+pub(crate) fn date(y: i32, m: u32, d: u32) -> DateTime<Utc> {
+    NaiveDate::from_ymd_opt(y, m, d)
+        .unwrap_or_default()
+        .and_time(NaiveTime::MIN)
+        .and_utc()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -467,10 +356,10 @@ pub struct Config {
     pub font: Font,
     /// Rings are laid out inner to outer in this order. Each one's `radius` may
     /// pin it in place; otherwise see `spacing`.
-    pub rings: Vec<RingSpec>,
+    pub rings: Vec<Ring>,
     /// Whole days worth marking, from an imported calendar or written by hand.
-    /// The year ring draws them; the browser keeps the raw `.ics` in local storage
-    /// and parses it there, so nothing here ever touches the network.
+    /// The year-scale rings draw them; the browser keeps the raw `.ics` in local
+    /// storage and parses it there, so nothing here ever touches the network.
     pub events: Vec<crate::events::Event>,
     /// Only needed for sunrise and sunset.
     pub location: Option<Location>,
@@ -496,10 +385,43 @@ impl Default for Config {
             colors: Overrides::default(),
             font: Font::default(),
             rings: vec![
-                RingSpec::Hour24(HourRing::default()),
-                RingSpec::Week(WeekRing::default()),
-                RingSpec::Month(MonthRing::default()),
-                RingSpec::Year(YearRing::default()),
+                Ring {
+                    thickness: 0.012,
+                    ..Ring::new(Scale::Hour24)
+                },
+                Ring {
+                    thickness: 0.085,
+                    ..Ring::new(Scale::Week)
+                },
+                Ring {
+                    thickness: 0.045,
+                    scale: Scale::Month,
+                    layers: Layers {
+                        day_borders: true,
+                        day_labels: true,
+                        weekends: true,
+                        today_marker: true,
+                        ..Default::default()
+                    },
+                    ..Ring::new(Scale::Month)
+                },
+                Ring {
+                    thickness: 0.13,
+                    offset_deg: 15.0,
+                    layers: Layers {
+                        month_ticks: true,
+                        month_labels: true,
+                        year_events: true,
+                        events: true,
+                        event_labels: true,
+                        seasons: true,
+                        week_ticks: true,
+                        weekends: true,
+                        today_marker: true,
+                        ..Default::default()
+                    },
+                    ..Ring::new(Scale::Year)
+                },
             ],
             events: Vec::new(),
             location: None,
@@ -516,32 +438,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn spans_parse_and_roundtrip() {
-        assert_eq!(
-            "2w".parse(),
-            Ok(Span {
-                count: 2,
-                unit: Unit::Week
-            })
-        );
-        assert_eq!(
-            "h".parse(),
-            Ok(Span {
-                count: 1,
-                unit: Unit::Hour
-            })
-        );
-        assert!("2 weeks".parse::<Span>().is_err());
-        assert_eq!(
-            serde_json::to_string(&"2w".parse::<Span>().unwrap()).unwrap(),
-            "\"2w\""
+    fn unknown_field_is_an_error() {
+        assert!(
+            serde_json::from_str::<Config>(r#"{"rings":[{"scale":"week","radiuss":1}]}"#).is_err()
         );
     }
 
     #[test]
-    fn unknown_field_is_an_error() {
-        assert!(
-            serde_json::from_str::<Config>(r#"{"rings":[{"type":"week","radiuss":1}]}"#).is_err()
-        );
+    fn the_year_period_is_the_calendar_year() {
+        let (start, end) = Scale::Year.period(date(2027, 6, 15));
+        assert_eq!((start.year(), start.month(), start.day()), (2027, 1, 1));
+        assert_eq!((end.year(), end.month(), end.day()), (2028, 1, 1));
+        let (start, _end) = Scale::Year.period(date(2027, 1, 1));
+        assert_eq!((start.year(), start.month(), start.day()), (2027, 1, 1));
+    }
+
+    #[test]
+    fn the_month_period_is_the_current_month() {
+        let (start, end) = Scale::Month.period(date(2026, 10, 13));
+        assert_eq!((start.year(), start.month(), start.day()), (2026, 10, 1));
+        assert_eq!((end.year(), end.month(), end.day()), (2026, 11, 1));
+    }
+
+    #[test]
+    fn the_week_period_starts_on_monday() {
+        // 2026-10-14 is a Wednesday.
+        let (start, end) = Scale::Week.period(date(2026, 10, 14));
+        assert_eq!(start.weekday().num_days_from_monday(), 0);
+        assert_eq!((end - start).num_days(), 7);
     }
 }
