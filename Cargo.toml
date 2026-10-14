@@ -20,3 +20,10 @@ wycca-core = { path = "crates/wycca-core" }
 lto = true
 codegen-units = 1
 strip = true
+
+# The browser build only: the same release profile tuned for bytes rather than
+# speed, because a few hundred KB is what the page downloads on every cold load.
+# `--release` above is left alone so the CLI keeps its optimiser settings.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"

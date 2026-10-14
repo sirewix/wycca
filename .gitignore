@@ -9,3 +9,7 @@
 *.png
 /web/wycca.wasm.js
 /web/wycca.wasm
+
+# The deployed build, which web/release.sh writes.
+/web/dist
+/wycca-web-*.tar.gz

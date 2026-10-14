@@ -59,8 +59,12 @@
             pkgs.dejavu_fonts
             # wasm32-unknown-unknown std ships with nixpkgs rustc, but the linker
             # that turns .o into a .wasm does not: rustc looks for `wasm-ld` on
-            # PATH and this is the only place it comes from.
+            # PATH and this is the only place it comes from. Neither does the
+            # re-encoder `web/release.sh` runs after it, which is the other half of
+            # the browser build: binaryen's wasm-opt, with the default feature set
+            # spelled out because it assumes almost nothing.
             pkgs.lld
+            pkgs.binaryen
           ];
             # resvg's fontdb has nothing to scan in a nix shell; hand it a font file
             # explicitly instead of depending on fontconfig paths.

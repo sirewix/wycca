@@ -15,6 +15,18 @@
   const boot = document.getElementById("boot");
   const el = (tag, cls) => Object.assign(document.createElement(tag), cls ? { className: cls } : {});
 
+  /** Firefox gives every file:// document its own origin, so reading the
+   *  property throws there (qutebrowser); Chromium hands one out for files.
+   *  Storage is for keeping the panel's edits, never for drawing, so a stub
+   *  that forgets is the whole fallback. */
+  const ls = (() => {
+    try {
+      return window.localStorage;
+    } catch {
+      return { getItem: () => null, setItem() {}, removeItem() {} };
+    }
+  })();
+
   /** Served: fetch the module like any other asset. file://: fall back to the
    *  base64 build.sh also emits, because fetch of a relative path is blocked. */
   async function instantiate() {
@@ -47,12 +59,12 @@
   }
 
   const form = JSON.parse(take(w.wycca_form()));
-  let zone = localStorage.getItem(ZONE) || null;
+  let zone = ls.getItem(ZONE) || null;
   let cfg = load();
 
   function load() {
     try {
-      const stored = JSON.parse(localStorage.getItem(CONFIG));
+      const stored = JSON.parse(ls.getItem(CONFIG));
       // A config written before layers were a list parses into a ring that draws
       // nothing, so ask the core rather than trust the shape: its render is the
       // only parser there is, and it says so in the SVG.
@@ -68,7 +80,7 @@
   const broken = (config) =>
     json(w.wycca_render, JSON.stringify(config), 0).includes("<desc>");
   const commit = () => {
-    localStorage.setItem(CONFIG, JSON.stringify(cfg));
+    ls.setItem(CONFIG, JSON.stringify(cfg));
     draw();
   };
 
@@ -421,7 +433,7 @@
     tz.value = zone || "";
     tz.oninput = () => {
       zone = tz.value || null;
-      localStorage.setItem(ZONE, zone || "");
+      ls.setItem(ZONE, zone || "");
       commit();
     };
     frag.append(row("timezone", tz));
@@ -437,7 +449,7 @@
       row(
         "config",
         button("reset", () => {
-          localStorage.removeItem(CONFIG);
+          ls.removeItem(CONFIG);
           cfg = load();
           build();
           commit();
@@ -501,7 +513,7 @@
 
   build();
   draw();
-  setInterval(draw, 1000);
+  setInterval(draw, 15000);
 })().catch((e) => {
   document.getElementById("boot").textContent = `${e && e.message ? e.message : e} — try: nix develop -c web/build.sh`;
 });

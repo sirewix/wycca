@@ -165,6 +165,16 @@ nix develop -c web/build.sh   # cargo -> base64 -> web/wycca.wasm.js
 xdg-open web/index.html       # or file://... in any browser, offline
 ```
 
+A release is the same page, tuned for bytes and without the `file://` fallback.
+Pushing a `v*` tag runs the workflow in `.github/workflows/release.yml`, which
+does exactly this and uploads the tarball:
+
+```sh
+nix develop -c web/release.sh    # web/dist/ + wycca-web-<version>.tar.gz
+WYCCA_VERSION=v0.1.0 nix develop -c web/release.sh
+gh release create v0.1.0 wycca-web-v0.1.0.tar.gz
+```
+
 Verify by **probing the rendered output**, not by looking at the SVG: sample the
 pixel at a given radius and angle and compare with the colour you expect, or just
 count the colours — `grep -o 'fill="#[0-9a-f]*"' wall.svg | sort | uniq -c`
@@ -215,6 +225,25 @@ there do comments earn their keep.
   The base64 copy is also the whole reason there is no bundler, no node and no
   wasm-bindgen, and the whole reason the timestamp is a parameter: an imported
   `Date.now` is an undefined symbol `wasm-ld` will not link.
+- **The release is a tarball, and its build is a second script.** `release.sh`
+  differs from `build.sh` in three measured things, and the numbers are why: a
+  wasm-only `[profile.wasm-release]` at `opt-level = "z"`, and a binaryen
+  `wasm-opt` **re-encode only** — its encoder is tighter than LLVM's. Together
+  they take the file from 394 KB to 335 KB and, gzipped, from 137 KB to 116 KB.
+  wasm-opt's *optimizing* passes (`-Oz`) do better raw (302 KB) and worse gzipped
+  (120 KB), and gzip is what nginx sends, so they are off; do not "fix" that by
+  adding `-Oz` back without re-measuring. The output is `web/dist/`, which has no
+  `wycca.wasm.js`: the base64 copy is for a page opened from disk, and a deployed
+  page fetches its wasm like any other asset.
+- **What the wasm's size is made of, now that it has been looked at.** Rust's
+  `core::fmt` for `format!("{x:.2}")` in `geom.rs`/`svg.rs`, serde's derive tables
+  and error strings, chrono's `format`/`parse` module (pulled in by its `serde`
+  feature, not by any date we format), panic scaffolding for a dozen always-on
+  `assert!`s in the dependencies, and ~700 monomorphized functions. Neither debug
+  symbols (already stripped by the profile, there is not one custom section in the
+  file) nor `pub` (not a wasm root) is among them. Hand-rolling a fixed-point
+  number writer to dodge `fmt` was tried and reverted: it measured *worse*, so
+  `flt2dec` is reachable from something else and the win is not there.
 - **`reversed` goes through `turn()`, never into the geometry.** Every angle in a
   ring is worked out the ring's natural way round and passed through one helper,
   so flipping a ring cannot be half-applied. A test renders each reversible ring

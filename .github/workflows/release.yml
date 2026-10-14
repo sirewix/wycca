@@ -1,0 +1,33 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write # `gh release create` uploads the tarball
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The nix devShell is the entire build — cargo, the wasm32 std, binaryen's
+      # wasm-opt — so what is uploaded is what `nix develop -c web/release.sh`
+      # makes locally. If nix in CI ever gets in the way, replace these two steps
+      # with `dtolnay/rust-toolchain@stable` (targets: wasm32-unknown-unknown)
+      # and a wasm-opt from the WebAssembly/binaryen release tarball; release.sh
+      # only ever asks for `cargo`, `wasm-opt` and `tar` on PATH.
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: build
+        run: nix develop --command bash web/release.sh
+        env:
+          WYCCA_VERSION: ${{ github.ref_name }}
+
+      - name: upload
+        run: gh release create "$WYCCA_VERSION" "wycca-web-$WYCCA_VERSION.tar.gz"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WYCCA_VERSION: ${{ github.ref_name }}
