@@ -53,7 +53,10 @@
   function load() {
     try {
       const stored = JSON.parse(localStorage.getItem(CONFIG));
-      if (stored && Array.isArray(stored.rings)) return stored;
+      // A config written before layers were a list parses into a ring that draws
+      // nothing, so ask the core rather than trust the shape: its render is the
+      // only parser there is, and it says so in the SVG.
+      if (stored && Array.isArray(stored.rings) && !broken(stored)) return stored;
     } catch {}
     const fresh = JSON.parse(take(w.wycca_default()));
     // Nothing on any platform can discover where you are, so a first run starts
@@ -62,6 +65,8 @@
     return fresh;
   }
 
+  const broken = (config) =>
+    json(w.wycca_render, JSON.stringify(config), 0).includes("<desc>");
   const commit = () => {
     localStorage.setItem(CONFIG, JSON.stringify(cfg));
     draw();
@@ -82,23 +87,14 @@
     const last = keys.pop();
     let o = obj;
     for (const k of keys) {
-      if (o[k] == null) o[k] = /^\d+$/.test(k) ? [] : {};
+      if (o[k] == null) o[k] = {};
       o = o[k];
     }
-    if (Array.isArray(o) && /^\d+$/.test(last)) {
-      // The four seasons are one decision, not four: a hole in the array is not
-      // a colour serde will take, so an unset sibling falls back to the palette.
-      o.length = 4;
-      o[last] = value;
-      o.forEach((c, i) => {
-        if (c == null) o[i] = palette().seasons[i];
-      });
-    } else {
-      o[last] = value;
-    }
+    o[last] = value;
   }
 
   const palette = () => form.palettes[cfg.theme] || form.palettes.dark;
+  const feeds = () => Object.keys(cfg.feeds || {});
 
   // --- controls ----------------------------------------------------------
   function row(label, ...nodes) {
@@ -118,6 +114,14 @@
     return b;
   };
 
+  const select = (options, here, on) => {
+    const s = el("select");
+    options.forEach((o) => s.append(new Option(o, o)));
+    s.value = here ?? options[0] ?? "";
+    s.oninput = () => on(s.value);
+    return s;
+  };
+
   /** One form field, bound to the object it configures. */
   function field(f, obj) {
     const here = get(obj, f.key);
@@ -131,8 +135,10 @@
       case "bool": {
         const c = el("input");
         c.type = "checkbox";
-        c.checked = !!here;
-        c.oninput = () => set(c.checked);
+        // A flag that can be null is on when it is there at all, and unchecking
+        // takes the whole thing away rather than writing false.
+        c.checked = f.optional ? here != null : !!here;
+        c.oninput = () => set(f.optional ? (c.checked ? {} : null) : c.checked);
         out.push(c);
         break;
       }
@@ -163,31 +169,32 @@
       case "color": {
         const c = el("input");
         c.type = "color";
-        c.value = here || defaultFor(f);
+        c.value = resolved(here) || defaultFor(f);
         c.oninput = () => set(c.value);
         out.push(c);
         break;
       }
-      case "choice": {
-        const s = el("select");
-        f.options.forEach((o) => s.append(new Option(o, o)));
-        s.value = here ?? f.options[0];
-        s.oninput = () => {
-          set(s.value);
+      case "choice":
+      case "feed": {
+        const options = f.kind === "feed" ? ["", ...feeds()] : f.options;
+        const s = select(options, here, (v) => {
+          set(v || null);
           // Every unset colour shows the theme's own, so a theme change has to
-          // redraw the panel rather than just the wall. A new scale changes the
-          // ring's title too, so it rebuilds for the same reason.
+          // redraw the panel rather than just the wall. A new scale or layer kind
+          // changes the card below it, so it rebuilds for the same reason.
           if (f.key === "theme" || f.key === "scale") build();
-        };
+        });
         out.push(s);
         break;
       }
       default: {
         const t = el("input");
         t.type = "text";
-        t.placeholder = f.kind === "span" ? "2w" : "";
         t.value = here ?? "";
-        t.oninput = () => set(t.value);
+        // A phase is a weekday or a month where the unit has names, and a number
+        // where it does not, so a number typed stays a number.
+        const typed = (v) => (/^\s*-?\d+\s*$/.test(v) ? +v : v);
+        t.oninput = () => set(typed(t.value));
         out.push(t);
       }
     }
@@ -203,32 +210,44 @@
     out.forEach((n) => (n.disabled = auto.checked));
     const tag = el("span", "auto");
     const word = el("span");
-    word.textContent = "auto";
+    word.textContent = f.optional;
     tag.append(auto, word);
     return row(f.label, tag, ...out);
+  }
+
+  /** A layer's colour is a palette slot name or a hex, so the swatch shows the
+   *  colour either resolves to, while the config keeps the name. */
+  function resolved(value) {
+    return /^#/.test(value) ? value : palette()[value];
   }
 
   /** What a control offers when "auto" comes off: the theme's own colour, or the middle. */
   function defaultFor(f) {
     if (f.kind === "color") {
-      // The last path segment is the palette slot; the seasons are indexed.
-      const slot = f.key.split(".").pop();
       const p = palette();
-      return /^\d+$/.test(slot) ? p.seasons[+slot] : p[slot];
+      // A layer's own colour ends in the part (`background`, `color`), not in a
+      // slot, so there is nothing to look up: muted, the one colour that shows on
+      // every fill. A section colour ends in its slot.
+      if (f.key.startsWith("disp.")) return p.muted;
+      return p[f.key.split(".").pop()] ?? p.muted;
     }
     return (f.min + f.max) / 2;
   }
 
-  // --- rings -------------------------------------------------------------
+  // --- rings and layers ---------------------------------------------------
   const newRing = (scale) => JSON.parse(json(w.wycca_ring, scale));
+  const newLayer = (kind) => JSON.parse(json(w.wycca_layer, kind));
+  /** The core names its own layers, so a card's title and its fields cannot
+   *  disagree about what it is. */
+  const titleOf = (layer) => json(w.wycca_title, JSON.stringify(layer));
 
   function rings(f) {
     const box = el("div");
     const build = () => {
       box.textContent = "";
       cfg.rings.forEach((ring, i) => {
-        // A ring is a dozen controls, so it folds: a row of rings is a screen,
-        // not a scroll.
+        // A ring is a handful of controls and a list of layers, so the card
+        // folds: a row of rings is a screen, not a scroll.
         const card = el("details", "ring");
         const head = el("summary", "ringhead");
         const step = (d) => () => {
@@ -250,80 +269,150 @@
         );
         card.append(head);
         form.ring_fields.forEach((rf) => card.append(field(rf, ring)));
+        card.append(layers(ring, { kinds: f.kinds }));
         box.append(card);
       });
-      const add = el("select");
-      add.append(new Option("+ add ring", ""));
-      f.scales.forEach((s) => add.append(new Option(s, s)));
-      add.oninput = () => {
-        cfg.rings.push(newRing(add.value));
+      const add = select(f.scales, "", (s) => {
+        if (!s) return;
+        cfg.rings.push(newRing(s));
         build();
         commit();
-      };
+      });
+      add.prepend(new Option("+ add ring", ""));
       box.append(add);
     };
     build();
     return box;
   }
 
-  // --- events -------------------------------------------------------------
-/** Whole days from an .ics feed. The parser is already in the core, so this is the
-   same thing `--events` does, minus the file being on disk. */
-  function events() {
-    const box = el("div");
-    const list = () => {
+  /** The layers on one ring, in paint order. Never folded: the layers are the
+   *  ring, and a ring whose layers are hidden is a ring nobody can see. */
+  function layers(ring, f) {
+    const box = el("div", "layers");
+    const build = () => {
       box.textContent = "";
-      const file = el("input");
-      file.type = "file";
-      file.accept = ".ics,text/calendar";
-      file.onchange = async () => {
-        const f = file.files[0];
-        if (!f) return;
-        if (f.size > SCRATCH) {
-          boot.textContent = `${f.name} is ${f.size} bytes; up to ${SCRATCH} fits`;
-          return;
-        }
-        const parsed = JSON.parse(json(w.wycca_events, await f.text()));
-        // Already-present days are skipped so re-importing a feed changes nothing.
-        for (const e of parsed) {
-          if (!cfg.events.some((x) => x.date === e.date && x.label === e.label)) cfg.events.push(e);
-        }
-        cfg.events.sort((a, b) => a.date.localeCompare(b.date));
-        list();
+      const step = (i, d) => () => {
+        [ring.layers[i], ring.layers[i + d]] = [ring.layers[i + d], ring.layers[i]];
+        build();
         commit();
       };
-      box.append(
-        row("import .ics", file),
-        row(
-          "count",
-          String(cfg.events.length),
-          button("clear", () => {
-            cfg.events = [];
-            list();
+      ring.layers.forEach((layer, i) => {
+        const card = el("div", "layer");
+        const head = el("div", "layerhead");
+        const title = el("span", "layertitle");
+        title.textContent = titleOf(layer);
+        head.append(
+          title,
+          select(f.kinds, layer.kind, (kind) => {
+            // The drawing is the person's; only the source comes from the core.
+            const fresh = newLayer(kind);
+            fresh.disp = layer.disp || {};
+            ring.layers[i] = fresh;
+            build();
+            commit();
+          }),
+          button("▲", step(i, -1)),
+          button("▼", step(i, 1)),
+          button("✕", () => {
+            ring.layers.splice(i, 1);
+            build();
             commit();
           })
-        )
-      );
-      const scroll = el("div", "scroll");
-      cfg.events.forEach((e, i) => {
-        scroll.append(
+        );
+        card.append(head);
+        (form.layer_fields[layer.kind] || []).forEach((lf) => card.append(field(lf, layer)));
+        box.append(card);
+      });
+      const add = select(f.kinds, "", (kind) => {
+        if (!kind) return;
+        ring.layers.push(newLayer(kind));
+        build();
+        commit();
+      });
+      add.prepend(new Option("+ add layer", ""));
+      box.append(add);
+    };
+    build();
+    return box;
+  }
+
+  // --- feeds ---------------------------------------------------------------
+  /** Whole days from an .ics feed, by the name layers refer to it by. The parser
+   *  is in the core already, so this is what `--events` does, minus the file
+   *  being on disk. */
+  function feedPanel() {
+    const box = el("div");
+    const load = async (file, name) => {
+      if (!file) return;
+      if (file.size > SCRATCH) {
+        boot.textContent = `${file.name} is ${file.size} bytes; up to ${SCRATCH} fits`;
+        return;
+      }
+      const parsed = JSON.parse(json(w.wycca_events, await file.text()));
+      // Already-present days are skipped so re-importing a feed changes nothing.
+      cfg.feeds = cfg.feeds || {};
+      const days = (cfg.feeds[name] = cfg.feeds[name] || []);
+      for (const e of parsed) {
+        if (!days.some((x) => x.date === e.date && x.label === e.label)) days.push(e);
+      }
+      days.sort((a, b) => a.date.localeCompare(b.date));
+      list();
+      commit();
+    };
+    const list = () => {
+      box.textContent = "";
+      cfg.feeds = cfg.feeds || {};
+      for (const name of feeds()) {
+        const days = cfg.feeds[name];
+        const rename = el("input");
+        rename.type = "text";
+        rename.value = name;
+        // One keystroke at a time, so the days are held here rather than looked
+        // up by the old name, which is gone after the first one.
+        rename.oninput = () => {
+          delete cfg.feeds[name];
+          cfg.feeds[rename.value] = days;
+          // Every layer that reads this feed has to read the new name.
+          cfg.rings.forEach((ring) =>
+            ring.layers.forEach((l) => {
+              if (l.source === name) l.source = rename.value;
+            })
+          );
+          commit();
+        };
+        const file = el("input");
+        file.type = "file";
+        file.accept = ".ics,text/calendar";
+        file.onchange = () => load(file.files[0], rename.value || name);
+        box.append(
           row(
-            `${e.date} ${e.label}`,
+            "feed",
+            rename,
+            file,
+            String(days.length),
             button("✕", () => {
-              cfg.events.splice(i, 1);
+              delete cfg.feeds[name];
               list();
               commit();
             })
           )
         );
-      });
-      box.append(scroll);
+      }
+      const add = el("input");
+      add.type = "file";
+      add.accept = ".ics,text/calendar";
+      // A new feed is named after the file, which is the name `--events` and the
+      // year ring's holidays layer already agree on.
+      add.onchange = () => load(add.files[0], add.files[0].name.replace(/\.ics$/i, ""));
+      box.append(row("import .ics", add));
+      box.append(
+        row("days in all", String(feeds().reduce((n, f) => n + cfg.feeds[f].length, 0)))
+      );
     };
     list();
     return box;
   }
 
-  // --- what the platform knows -------------------------------------------
   function platform() {
     const frag = document.createDocumentFragment();
     const tz = el("select");
@@ -405,8 +494,8 @@
     // List editing is chrome, not a field, so it sits outside the core's sections.
     const d = el("details");
     const sum = el("summary");
-    sum.textContent = "Events";
-    d.append(sum, events());
+    sum.textContent = "Calendars";
+    d.append(sum, feedPanel());
     panel.append(d);
   }
 

@@ -6,8 +6,91 @@
   "location": { "lat": 51.17, "lon": 71.45 },
   "font": { "family": "DejaVu Sans", "size": 0.016 },
   "rings": [
-    { "scale": "hour24", "thickness": 0.008, "layers": { "ticks": true, "tick_labels": true, "label_major_only": true, "major_every": 6 } },
-    { "scale": "week", "thickness": 0.07, "layers": { "day_sectors": true } },
-    { "scale": "year", "thickness": 0.14, "layers": { "month_ticks": true, "month_labels": true, "year_events": true, "events": true, "event_labels": true } }
+    {
+      "scale": "hour24",
+      "thickness": 0.008,
+      "layers": [
+        { "kind": "solar", "what": "day", "disp": { "background": "day" } },
+        { "kind": "solar", "what": "night", "disp": { "background": "night" } },
+        { "kind": "periodic", "unit": "hour", "amount": 0, "every": 6, "shift": 0,
+          "disp": { "border": { "color": "muted", "width": 0.008 },
+                    "label": { "at": "in", "anchor": "start", "color": "foreground" } } },
+        { "kind": "periodic", "unit": "hour", "amount": 0, "shift": 0,
+          "disp": { "border": { "color": "muted", "width": 0.004 }, "offsets": { "inner": 55, "outer": 0 } } },
+        { "kind": "solar", "what": "sunrise",
+          "disp": { "border": { "color": "solar", "width": 0.004 }, "offsets": { "inner": -10, "outer": -10 } } },
+        { "kind": "solar", "what": "sunset",
+          "disp": { "border": { "color": "solar", "width": 0.004 }, "offsets": { "inner": -10, "outer": -10 } } },
+        { "kind": "now",
+          "disp": { "border": { "color": "accent", "width": 0.008 }, "offsets": { "inner": -10, "outer": -10 } } },
+        { "kind": "now",
+          "disp": { "border": { "kind": "hand", "color": "accent", "width": 0.004, "inner": 0 } } }
+      ]
+    },
+    {
+      "scale": "week",
+      "thickness": 0.07,
+      "layers": [
+        { "kind": "periodic", "unit": "day", "amount": 1, "shift": "mon",
+          "disp": { "background": "muted", "gap": 0.6 } },
+        { "kind": "periodic", "unit": "day", "amount": 2, "every": 7, "shift": "sat",
+          "disp": { "background": "weekend" } },
+        { "kind": "periodic", "unit": "day", "amount": 0, "every": 7, "shift": "sun",
+          "disp": { "border": { "color": "border", "width": 0.004 }, "offsets": { "inner": -10, "outer": -10 } } },
+        { "kind": "periodic", "unit": "week", "amount": 0,
+          "disp": { "border": { "color": "border", "width": 0.004 }, "offsets": { "inner": -10, "outer": -10 } } },
+        { "kind": "now",
+          "disp": { "border": { "color": "accent", "width": 0.008 }, "offsets": { "inner": -10, "outer": -10 } } }
+      ]
+    },
+    {
+      "scale": "month",
+      "thickness": 0.05,
+      "layers": [
+        { "kind": "periodic", "unit": "day", "amount": 0,
+          "disp": { "border": { "width": 0.004 }, "offsets": { "inner": 55, "outer": 10 } } },
+        { "kind": "periodic", "unit": "day", "amount": 2, "every": 7, "shift": "sat",
+          "disp": { "background": "weekend" } },
+        { "kind": "periodic", "unit": "day", "amount": 0, "shift": "mon",
+          "disp": { "label": { "at": "at", "anchor": "middle", "color": "foreground", "size": 0.7 } } },
+        { "kind": "now",
+          "disp": { "border": { "color": "accent", "width": 0.008 }, "offsets": { "inner": -10, "outer": -10 } } }
+      ]
+    },
+    {
+      "scale": "year",
+      "thickness": 0.14,
+      "offset_deg": 15,
+      "layers": [
+        { "kind": "periodic", "unit": "month", "amount": 3, "every": 12, "shift": "dec",
+          "disp": { "background": "winter", "gap": 0.6 } },
+        { "kind": "periodic", "unit": "month", "amount": 3, "every": 12, "shift": "mar",
+          "disp": { "background": "spring", "gap": 0.6 } },
+        { "kind": "periodic", "unit": "month", "amount": 3, "every": 12, "shift": "jun",
+          "disp": { "background": "summer", "gap": 0.6 } },
+        { "kind": "periodic", "unit": "month", "amount": 3, "every": 12, "shift": "sep",
+          "disp": { "background": "autumn", "gap": 0.6 } },
+        { "kind": "periodic", "unit": "month", "amount": 0, "shift": "jan",
+          "disp": { "border": { "color": "border", "width": 0.008 }, "offsets": { "inner": -1, "outer": -1 } } },
+        { "kind": "periodic", "unit": "day", "amount": 0,
+          "disp": { "border": { "width": 0.001 }, "offsets": { "inner": 0, "outer": 0 } } },
+        { "kind": "periodic", "unit": "week", "amount": 0,
+          "disp": { "border": { "color": "week_marks", "width": 0.002 }, "offsets": { "inner": 0, "outer": 70 } } },
+        { "kind": "periodic", "unit": "month", "amount": 0, "shift": "jan",
+          "disp": { "label": { "at": "out", "anchor": "middle", "color": "foreground" } } },
+        { "kind": "periodic", "unit": "day", "amount": 2, "every": 7, "shift": "sat",
+          "disp": { "background": "weekend" } },
+        { "kind": "solar", "what": "equinox",
+          "disp": { "border": { "color": "solar", "width": 0.004 }, "offsets": { "inner": -10, "outer": -10 } } },
+        { "kind": "solar", "what": "solstice",
+          "disp": { "border": { "color": "solar", "width": 0.004 }, "offsets": { "inner": -10, "outer": -10 } } },
+        { "kind": "ics", "source": "holidays", "only": "free",
+          "disp": { "border": { "color": "weekend", "width": 0.004 },
+                    "offsets": { "inner": -2, "outer": -2 },
+                    "label": { "at": "at", "color": "border", "size": 0.8 } } },
+        { "kind": "now",
+          "disp": { "border": { "color": "accent", "width": 0.008 }, "offsets": { "inner": -10, "outer": -10 } } }
+      ]
+    }
   ]
 }

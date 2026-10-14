@@ -48,8 +48,9 @@ eventually a browser page and an Android widget.
 
 ```
 crates/wycca-core/   config, geometry, SVG, solar maths, .ics — all pure
-  config.rs   the whole schema; a ring is a scale plus a bag of layer flags
-  rings.rs    the layers, plus the one angle helper they all run through
+  config.rs   the whole schema; a ring is a scale plus layers, a layer a source
+              plus a display
+  rings.rs    span generation and the two primitives, through one angle helper
   geom.rs     polar -> SVG path data, arcs split at <=180 degrees
   svg.rs      the writer
   sun.rs      equinoxes/solstices (Meeus) and sunrise/sunset (NOAA)
@@ -63,15 +64,57 @@ web/          index.html + ui.js, the only hand-written page; build.sh emits
 
 ## Rings
 
-A ring is `Scale` + `Layers`: the scale is the span of time one turn covers
+A ring is `Scale` + `Vec<Layer>`. The scale is the span of time one turn covers
 (`hour24`, `week`, `month`, `year` — the calendar year, so the seasons sit
-symmetric about the cardinal axes and each season holds its three months), the
-layers are flags for what is drawn on it (sectors, ticks, markers, a hand). Every
-angle is a fraction of the scale's current period through one helper, so layers
-can never disagree about a position and `reversed` is applied once. A new thing to
-draw is a new flag in `Layers` plus a block in `rings::draw`; there is no
-per-ring-type code. `Ring::new(scale)` is the only place a ring's starting layers
-are chosen.
+symmetric about the cardinal axes and each season holds its three months). A
+layer is the only other thing there is, and it is two things: **where its spans
+come from** and **how to draw them**.
+
+```yaml
+- kind: periodic        # solar | ics | now
+  unit: day             # year month week day hour minute
+  amount: 2             # how long a span is, in units; 0 is an instant
+  every: 7              # repeat every n units
+  shift: sat            # the phase: a weekday for days, a month for months, a number for hours
+  disp:                 # the drawing, the same for every kind
+    background: weekend # a palette slot name or #rrggbb; null for no fill
+    border: { kind: line, color: accent, width: 0.004, inner: 0.1 }
+    label: { at: in, anchor: middle, color: foreground, size: 0.8 }
+    offsets: { inner: 0, outer: 0 }   # trims, in per cent of the ring's thickness; null fills it
+    gap: 0.6            # degrees trimmed off each end, so neighbours read apart
+```
+
+That is the whole vocabulary. A tick, a rule between two months, a weekend, a
+season, a holiday and the clock hand are all the same layer with different
+numbers, which is why there are no flags: `Layers` and its twenty-two booleans
+are gone, and so is the `draw` function that switched on them.
+
+Three things the model leans on, all in `rings.rs`:
+
+- **A span is an instant plus a length, and the arc is `start + length`.** Never
+  a start and an end to clip to the period, so a season that began last December
+  or a night that runs past midnight is one arc that comes back round the turn.
+  For this reason `ring_angle` does not clamp and does not fold into 0..360.
+- **Each unit counts from its own epoch**, chosen so index zero is the phase
+  zero: midnight, midnight on a Monday, January 1970. A Saturday is a Saturday
+  on a month ring and a year ring alike, which is what makes `shift` mean the
+  same thing on every ring, and why `shift: sat` and `shift: 5` are the same
+  layer — the name is which number a person would have said. Months and years are
+  walked with `chrono`'s calendar arithmetic, so February is short and leap years
+  are long with no special case.
+- **A span at least as long as one turn is not drawn.** A ring is a circle; a
+  three-month season on a month ring is not a shape. `periodic` drops it.
+
+A label sits at one end of its span or the other or in the middle (`anchor`), and
+across the ring or on the fill or past it (`at`). A border's `offsets` are
+**trims**: `inner` off the ring's inner edge, `outer` off the outer one, both as
+a percentage of the ring's thickness, so `0, 0` is the whole ring and `-10, -10`
+stands out past both edges. A mark that stops at the ring's own edge is a dot on a
+thin ring, which is the one thing a mark must never be.
+
+`Ring::new(scale)` and `Layer::new(kind)` are the only places a ring's or a
+layer's starting values are chosen, which is why the UIs ask for one rather than
+writing a half-filled object.
 
 Radii come from `layout()`: `r = outer_radius * t^(1 + 2*spacing)` with
 `t = (i+1)/n`. `spacing` is the single slider; `0` is even, `1` squeezes the inner
@@ -88,7 +131,17 @@ rings together. Setting a ring's `radius` pins it and skips the layout.
   background colour on one theme and the opposite on the other, so the dark half
   of the clock reads as dark on either. Nothing else may borrow those.
   Every event is `weekend` red, free or busy; the mark's length is what says which.
-- `deny_unknown_fields` on every config struct: a typo must be a parse error.
+- `deny_unknown_fields` on every config struct, on the `Layer` enum too: a typo
+  must be a parse error. It sits next to the serde field defaults on purpose —
+  `{"amount": 1, "amoun": 2}` is a typo, not a request for the default.
+- **A colour is a palette slot name or a `#rrggbb`, never a field of its own.**
+  `Palette::color` resolves one string, so `background: weekend` follows the
+  theme and `background: "#800000"` does not, with no extra config surface. Every
+  slot is a *name* — `colors.winter`, not `colors.seasons.0` — because the layer
+  that draws with it has to be able to write the name down.
+- **A border is a rule in the colour of the paper.** `Border`'s default is the
+  `background` slot, so adding a border without a colour divides whatever is
+  under it and disappears where nothing is. Name a colour when you want to see it.
 - Everything time-of-day on a ring sweeps continuously. Angles are fractions of
   the scale's period, never integer-clipped.
 - Write comments for *why*, never for what.
@@ -112,9 +165,11 @@ nix develop -c web/build.sh   # cargo -> base64 -> web/wycca.wasm.js
 xdg-open web/index.html       # or file://... in any browser, offline
 ```
 
-Verify by **probing the rendered PNG**, not by looking at the SVG: sample the pixel
-at a given radius and angle and compare with the colour you expect. ASCII-art
-downsampling is fine for a quick shape check.
+Verify by **probing the rendered output**, not by looking at the SVG: sample the
+pixel at a given radius and angle and compare with the colour you expect, or just
+count the colours — `grep -o 'fill="#[0-9a-f]*"' wall.svg | sort | uniq -c`
+should account for every layer, which is how the seasons went missing once
+already. ASCII-art downsampling is fine for a quick shape check.
 
 ## Local files, gitignored
 
@@ -140,7 +195,14 @@ there do comments earn their keep.
 - **Whole-day events only.** `DTSTART;VALUE=DATE` is the test for "whole day";
   anything with a time is skipped because a ring has no room for one.
   `TRANSP:TRANSPARENT` is the test for "a day off", and a free event draws a full
-  crossing line while a busy one draws a short notch.
+  crossing line while a busy one draws a short notch. `Config::feeds` is a name to
+  days map, so a layer can read one and `--events` has somewhere to put it: it
+  lands in `DEFAULT_FEED`, the feed the year ring's holidays layer already names.
+- **The config UI is described by the core, never implemented by it.** `ui.rs`
+  emits sections, fields and ranges as JSON; the browser and the widget render
+  that with their own widgets. Two UIs, one description. The only thing tying them
+  together is the dotted key strings, and two tests in `ui.rs` check every one of
+  them against `Config`.
 - **No `RRULE` expansion yet.** The country feeds enumerate every year explicitly.
   Swap the hand-written parser for the `icalendar` crate if someone wants a birthday
   calendar; there is a `ponytail:` note saying so in `events.rs`.
@@ -165,11 +227,17 @@ there do comments earn their keep.
   `ui.js` reads `Intl.supportedValuesOf("timeZone")` and recomputes the offset each
   frame (which is also how daylight saving follows). Android will do the same with
   `TimeZone`. Fifteen lines per platform beats the dependency.
-- **A new ring arrives through `wycca_ring`, not as a half-written object.** The
-  form says which controls a ring has, not what they start at, so the UI asks
-  the core for a `Ring::new(scale)` and never invents a value. The same goes for
-  `.ics`: `wycca_events` runs the parser the CLI runs, so the page and
-  `wycca --events` can never disagree about what a holiday is.
+- **A new ring arrives through `wycca_ring`, and a new layer through
+  `wycca_layer`.** The form says which controls a ring has, not what they start
+  at, so the UI asks the core for a `Ring::new(scale)` and never invents a value.
+  Changing a layer's kind keeps its `disp` and takes a fresh source, because the
+  drawing is the person's and the source is the core's. The same goes for `.ics`:
+  `wycca_events` runs the parser the CLI runs, so the page and `wycca --events`
+  can never disagree about what a holiday is.
+- **A layer's title comes from the core too**, via `wycca_title`: `2d from sat`,
+  `3mo from dec`, `point every 6h from 0`. Spelling it in the page instead would
+  mean two descriptions of the same thing, and a title is the one line a person
+  reads before deciding whether to open the card.
 
 ## Not built yet
 
@@ -178,6 +246,11 @@ the launcher a `Bitmap`), exporting a config file, lunar months (1900–2100
 new-moon table; no maintained crate exists), day-length wedges, subnational
 holidays, `RRULE`, interval rings (a fixed-length scale for sprints and release
 trains; every layer works on one, only the scale is missing).
+
+Two marks are described and not built, because nothing draws one yet: a triangle
+pointing at the ring from outside it, and a circle. `Border` is where they would
+go — `Hand` already has `inner`, the start of a hand, which is the same idea. A
+tick that needs a dot at the centre is `svg.circle` and one line.
 
 ## Commits
 

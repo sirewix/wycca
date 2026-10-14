@@ -1,16 +1,18 @@
 //! One ring, many layers. A ring is a span of time on an annulus — its scale
-//! fixes the span, its layers what is drawn on it. A new thing to draw is a new
-//! flag in `Layers` plus a block in `draw`; there is no per-ring-type code.
+//! fixes the span, its layers divide it. Drawing a ring is then two steps and
+//! nothing else: work out each layer's spans, and draw each span.
 //!
 //! Every angle runs through [`ring_angle`], so a layer can never disagree with
 //! another about where something sits, and `reversed` is applied once, here,
 //! rather than per layer.
 
-use chrono::{DateTime, Datelike, Months, NaiveTime, TimeZone, Utc};
+use std::collections::BTreeMap;
+
+use chrono::{DateTime, Datelike, Months, NaiveTime, TimeZone, Timelike, Utc};
 
 use crate::{
-    config::{EventStyle, Location, Palette, Ring, Scale, date},
-    events::Kind,
+    config::{Anchor, BorderKind, Disp, Label, Layer, Location, Palette, Ring, Solar, Unit, Where},
+    events,
     geom::{polar, rad, radial, sector, turn},
     sun,
     svg::Svg,
@@ -28,7 +30,7 @@ pub struct Ctx<'a> {
     /// Where the wall clock sits relative to UTC; solar events need it.
     pub utc_offset_ms: i64,
     pub location: Option<Location>,
-    pub events: &'a [crate::events::Event],
+    pub feeds: &'a BTreeMap<String, Vec<events::Event>>,
 }
 
 /// A ring's radial extent, resolved once by [`crate::layout`].
@@ -37,384 +39,360 @@ pub struct Band {
     pub r_out: f64,
 }
 
-/// Angular gap between sectors, in degrees, so adjacent sectors read as segments.
-const GAP: f64 = 0.6;
+/// 1970-01-01, where the fixed-length units count from.
+const EPOCH: DateTime<Utc> = DateTime::UNIX_EPOCH;
 
-/// Width of ticks and markers, as a fraction of the half-canvas.
-const MARKER: f64 = 0.004;
+/// One stretch of a ring: where it starts, how long it is, and what to call it.
+/// A zero length is an instant — a tick, a marker, or just somewhere to put a
+/// label — and gets no fill.
+struct Span {
+    at: DateTime<Utc>,
+    len: chrono::Duration,
+    /// The distance to the next span of the same kind. An instant has no extent
+    /// of its own, so this is what a label with `anchor: middle` takes the
+    /// middle of: a month number stands in the middle of its month, not on its
+    /// first day.
+    cell: chrono::Duration,
+    label: Option<String>,
+}
 
-pub fn draw(svg: &mut Svg, ring: &Ring, band: &Band, ctx: &Ctx) {
-    let (cx, cy, half) = (ctx.cx, ctx.cy, ctx.half);
-    let (r_in, r_out) = (band.r_in, band.r_out);
-    let (start, end) = ring.scale.period(ctx.now);
-    let l = &ring.layers;
-    let ang = |t: DateTime<Utc>| ring_angle(ring, start, end, t);
-
-    // Sectors sit under everything else.
-    if l.seasons {
-        // Season boundaries at the meteorological season starts, so each season
-        // holds exactly its three months. Winter (Dec 1 to Mar 1) crosses the
-        // period's zero, so its end is unwrapped to keep the arc the short way.
-        let y = start.year();
-        let bounds = [
-            date(y - 1, 12, 1),
-            date(y, 3, 1),
-            date(y, 6, 1),
-            date(y, 9, 1),
-        ];
-        let span = (end - start).num_milliseconds().max(1) as f64;
-        let nat = |t: DateTime<Utc>| {
-            rad(ring.offset_deg
-                + ring.scale.dir() * (t - start).num_milliseconds() as f64 / span * 360.0)
-        };
-        for (i, s) in bounds.iter().enumerate() {
-            let a0 = nat(*s);
-            let mut a1 = nat(bounds[(i + 1) % 4]);
-            if ring.scale.dir() < 0.0 && a1 > a0 {
-                a1 -= rad(360.0);
-            } else if ring.scale.dir() > 0.0 && a1 < a0 {
-                a1 += rad(360.0);
-            }
-            svg.path(
-                &sector(
-                    cx,
-                    cy,
-                    r_in,
-                    r_out,
-                    turn(ring.reversed, a0),
-                    turn(ring.reversed, a1),
-                ),
-                &ctx.palette.seasons[i],
-            );
+impl Span {
+    fn new(at: DateTime<Utc>, len: chrono::Duration, label: Option<&str>) -> Self {
+        Self {
+            at,
+            len,
+            cell: len,
+            label: label.map(str::to_owned),
         }
     }
 
-    if l.month_sectors {
-        let mut at = start;
-        while at < end {
-            let next = at
-                .checked_add_months(Months::new(1))
-                .unwrap_or(end)
-                .min(end);
-            svg.path(
-                &sector(
-                    cx,
-                    cy,
-                    r_in,
-                    r_out,
-                    ang(at) + rad(GAP / 2.0),
-                    ang(next) - rad(GAP / 2.0),
-                ),
-                &ctx.palette.muted,
-            );
-            at = next;
-        }
-    }
-
-    if l.day_sectors {
-        for day in 0..7 {
-            let color = match day {
-                5 | 6 => &ctx.palette.weekend,
-                _ => &ctx.palette.muted,
-            };
-            let (a0, a1) = (
-                start + chrono::Duration::days(day),
-                start + chrono::Duration::days(day + 1),
-            );
-            svg.path(
-                &sector(
-                    cx,
-                    cy,
-                    r_in,
-                    r_out,
-                    ang(a0) + rad(GAP / 2.0),
-                    ang(a1) - rad(GAP / 2.0),
-                ),
-                color,
-            );
-        }
-    }
-
-    if l.progress {
-        svg.path(
-            &sector(cx, cy, r_in, r_out, ang(start), ang(ctx.now)),
-            &ctx.palette.foreground,
-        );
-    }
-
-    if l.weekends || l.day_borders {
-        let mut at = start;
-        while at < end {
-            let is_weekend = matches!(at.weekday().num_days_from_monday(), 5 | 6);
-            if l.weekends && is_weekend {
-                // A red day sector, the way the week ring marks its weekend.
-                let next = at + chrono::Duration::days(1);
-                svg.path(
-                    &sector(cx, cy, r_in, r_out, ang(at), ang(next)),
-                    &ctx.palette.weekend,
-                );
-            } else if l.day_borders {
-                svg.line(
-                    &radial(
-                        cx,
-                        cy,
-                        r_in + (r_out - r_in) * 0.55,
-                        r_in + (r_out - r_in) * 0.9,
-                        ang(at),
-                    ),
-                    &ctx.palette.border,
-                    MARKER * half * 0.6,
-                );
-            }
-            at += chrono::Duration::days(1);
-        }
-    }
-
-    if l.week_ticks {
-        let mut at = start;
-        while at.weekday().num_days_from_monday() != 0 {
-            at += chrono::Duration::days(1);
-        }
-        while at < end {
-            svg.line(
-                &radial(cx, cy, r_in, r_in + (r_out - r_in) * 0.3, ang(at)),
-                &ctx.palette.week_marks,
-                MARKER * half * 0.6,
-            );
-            at += chrono::Duration::days(7);
-        }
-    }
-
-    if l.month_ticks {
-        for m in 0..12 {
-            let at = start.checked_add_months(Months::new(m)).unwrap_or(start);
-            if at >= end {
-                break;
-            }
-            svg.line(
-                &radial(cx, cy, r_in - half * 0.01, r_out, ang(at)),
-                &ctx.palette.border,
-                MARKER * half,
-            );
-            if l.month_labels {
-                let a = ang(at + chrono::Duration::days(15));
-                let (x, y) = polar(cx, cy, r_out + half * 0.04, a);
-                svg.text(
-                    x,
-                    y,
-                    ctx.font_size,
-                    &ctx.palette.foreground,
-                    "middle",
-                    &at.month().to_string(),
-                );
-            }
-        }
-    }
-
-    // Day and night are sectors, so they go down with the other sectors: the
-    // ticks land on top of them and stay readable on the lit half.
-    if (l.day || l.night)
-        && let Some(loc) = ctx.location
-        && matches!(ring.scale, Scale::Hour24)
-        && let Some((rise, set)) = sun::daylight(ctx.now.date_naive(), loc.lat, loc.lon)
-    {
-        let a_rise = ang(ctx.wall(rise));
-        let a_set = ang(ctx.wall(set));
-        if l.day {
-            svg.path(
-                &sector(cx, cy, r_in, r_out, a_rise, a_set),
-                &ctx.palette.day,
-            );
-        }
-        if l.night {
-            // Sunset round to sunrise, the long way forward through midnight.
-            let a1 = if a_rise > a_set {
-                a_rise
-            } else {
-                a_rise + rad(360.0)
-            };
-            svg.path(&sector(cx, cy, r_in, r_out, a_set, a1), &ctx.palette.night);
-        }
-    }
-
-    if l.ticks {
-        let major = l.major_every.max(1);
-        let w = (ring.thickness * half).max(1.0);
-        for h in 0..24 {
-            let a = ang(start + chrono::Duration::hours(i64::from(h)));
-            // Short ticks for the hours between two majors.
-            let (i, o, lw) = match h % major {
-                0 => (r_in, r_out, w),
-                _ => (r_in + (r_out - r_in) * 0.55, r_out, w * 0.45),
-            };
-            svg.line(&radial(cx, cy, i, o, a), &ctx.palette.muted, lw);
-        }
-    }
-
-    if l.sun
-        && let Some(loc) = ctx.location
-        && let Some((rise, set)) = sun::daylight(ctx.now.date_naive(), loc.lat, loc.lon)
-    {
-        for t in [rise, set] {
-            svg.line(
-                &radial(cx, cy, r_in, r_out, ang(ctx.wall(t))),
-                &ctx.palette.solar,
-                MARKER * half * 0.8,
-            );
-        }
-    }
-
-    if l.year_events {
-        // Global instants, slid onto the wall clock by the UTC offset.
-        for t in sun::events_between(start, end) {
-            svg.line(
-                &radial(
-                    cx,
-                    cy,
-                    r_in - half * 0.02,
-                    r_out + half * 0.02,
-                    ang(ctx.wall(t)),
-                ),
-                &ctx.palette.solar,
-                MARKER * half,
-            );
-        }
-    }
-
-    if l.events && !ctx.events.is_empty() {
-        let in_window =
-            |e: &crate::events::Event| e.date >= start.date_naive() && e.date <= end.date_naive();
-        match l.event_style {
-            EventStyle::Sector => {
-                for e in ctx.events.iter().filter(|e| in_window(e)) {
-                    let at = e.date.and_time(NaiveTime::MIN).and_utc();
-                    let next = e
-                        .date
-                        .succ_opt()
-                        .unwrap_or(e.date)
-                        .and_time(NaiveTime::MIN)
-                        .and_utc();
-                    svg.path(
-                        &sector(cx, cy, r_in, r_out, ang(at), ang(next)),
-                        &ctx.palette.weekend,
-                    );
-                }
-            }
-            EventStyle::Notch => {
-                let mut placed: Vec<f64> = Vec::new();
-                let mid_r = (r_in + r_out) / 2.0;
-                for event in ctx.events.iter().filter(|e| in_window(e)) {
-                    let at = event.date.and_time(NaiveTime::MIN).and_utc();
-                    let a = ang(at);
-                    let deg = a.to_degrees().rem_euclid(360.0);
-                    let color = match event.kind {
-                        Kind::Free => &ctx.palette.weekend,
-                        Kind::Busy => &ctx.palette.foreground,
-                    };
-                    let (i, o, w) = match event.kind {
-                        Kind::Free => {
-                            (r_in - half * 0.02, r_out + half * 0.02, MARKER * half * 0.8)
-                        }
-                        Kind::Busy => (r_in, r_in + (r_out - r_in) * 0.45, MARKER * half * 0.6),
-                    };
-                    svg.line(&radial(cx, cy, i, o, a), color, w);
-
-                    if l.event_labels && event.kind == Kind::Free {
-                        // Greedy: skip a label that would land on the previous one.
-                        let span = event.label.chars().count() as f64 * ctx.font_size * 0.55
-                            / mid_r
-                            * 180.0
-                            / std::f64::consts::PI;
-                        if placed.iter().all(|p| (deg - p).abs() > span + 1.0) {
-                            placed.push(deg);
-                            let (x, y) = polar(cx, cy, mid_r, a);
-                            svg.text(
-                                x,
-                                y,
-                                ctx.font_size * 0.8,
-                                &ctx.palette.border,
-                                "middle",
-                                &event.label,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if l.tick_labels {
-        let major = l.major_every.max(1);
-        for h in 0..24 {
-            if l.label_major_only && h % major != 0 {
-                continue;
-            }
-            let a = ang(start + chrono::Duration::hours(i64::from(h)));
-            // Inside the ring, but never past the centre.
-            let (x, y) = polar(cx, cy, (r_in - half * 0.035).max(0.0), a);
-            svg.text(
-                x,
-                y,
-                ctx.font_size,
-                &ctx.palette.foreground,
-                "middle",
-                &h.to_string(),
-            );
-        }
-    }
-
-    if l.day_labels {
-        let mut at = start;
-        while at < end {
-            let a = ang(at + chrono::Duration::hours(12));
-            let (x, y) = polar(cx, cy, (r_in + r_out) / 2.0, a);
-            svg.text(
-                x,
-                y,
-                ctx.font_size * 0.7,
-                &ctx.palette.foreground,
-                "middle",
-                &at.day().to_string(),
-            );
-            at += chrono::Duration::days(1);
-        }
-    }
-
-    if l.today_marker {
-        svg.line(
-            &radial(
-                cx,
-                cy,
-                r_in - half * 0.012,
-                r_out + half * 0.012,
-                ang(ctx.now),
-            ),
-            &ctx.palette.accent,
-            MARKER * half * 1.5,
-        );
-    }
-
-    if l.hand {
-        svg.line(
-            &radial(cx, cy, l.hand_inner * half, r_out, ang(ctx.now)),
-            &ctx.palette.accent,
-            MARKER * half * 1.5,
-        );
-        if l.hand_dot {
-            svg.circle(cx, cy, half * 0.008, &ctx.palette.accent);
+    /// What a label along this span measures: the span itself, or the gap to the
+    /// next one when there is no span to measure.
+    fn extent(&self) -> chrono::Duration {
+        if self.len > chrono::Duration::zero() {
+            self.len
+        } else {
+            self.cell
         }
     }
 }
 
+/// Where a span lands on a ring, worked out in one place so a fill, a stroke and
+/// a label cannot disagree about it.
+#[derive(Clone, Copy)]
+struct Arc {
+    /// The span's leading edge and its far edge: `at` plus its own length, in the
+    /// scale's direction and flipped once by `reversed`.
+    span: (f64, f64),
+    /// The far edge of the whole cell, which is the same thing unless the span
+    /// is an instant with no length of its own.
+    cell: f64,
+}
+
+impl Arc {
+    fn of(
+        ring: &Ring,
+        period: (DateTime<Utc>, DateTime<Utc>),
+        at: DateTime<Utc>,
+        span: &Span,
+        per: f64,
+    ) -> Self {
+        let sweep = |len: chrono::Duration| {
+            turn(
+                ring.reversed,
+                rad(ring.scale.dir() * len.num_milliseconds() as f64 / per * 360.0),
+            )
+        };
+        let from = ring_angle(ring, period, at);
+        Self {
+            span: (from, from + sweep(span.len)),
+            cell: from + sweep(span.extent()),
+        }
+    }
+}
+
+pub fn draw(svg: &mut Svg, ring: &Ring, band: &Band, ctx: &Ctx) {
+    let period = ring.scale.period(ctx.now);
+    let per = (period.1 - period.0).num_milliseconds().max(1) as f64;
+    for layer in &ring.layers {
+        let mut placed: Vec<f64> = Vec::new();
+        for span in spans(layer, period, ctx) {
+            // The arc is the span's start plus its length, in the scale's
+            // direction and flipped once by `reversed`, so a span that runs past
+            // the end of the period comes back round the turn.
+            let arc = Arc::of(ring, period, span.at, &span, per);
+            draw_span(svg, &span, arc, layer.disp(), band, ctx, &mut placed);
+        }
+    }
+}
+
+/// Every span a layer's source produces, in the order they happen.
+fn spans(layer: &Layer, period: (DateTime<Utc>, DateTime<Utc>), ctx: &Ctx) -> Vec<Span> {
+    match layer {
+        Layer::Periodic {
+            unit,
+            amount,
+            every,
+            shift,
+            ..
+        } => periodic(*unit, *amount, *every, shift.index(*unit), period),
+        Layer::Ics { source, only, .. } => ctx
+            .feeds
+            .get(source)
+            .map(|feed| {
+                feed.iter()
+                    .filter(|e| only.is_none_or(|k| e.kind == k))
+                    .filter(|e| e.date >= period.0.date_naive() && e.date <= period.1.date_naive())
+                    .map(|e| {
+                        let at = e.date.and_time(NaiveTime::MIN).and_utc();
+                        Span::new(at, chrono::Duration::days(1), Some(&e.label))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Layer::Solar { what, .. } => solar(*what, period, ctx),
+        Layer::Now { .. } => vec![Span::new(ctx.now, chrono::Duration::zero(), None)],
+    }
+}
+
+/// Occurrence `i` of a pattern: `amount` units long, starting `shift` units into
+/// the unit's cycle and repeating every `every` units.
+///
+/// The cycle is the calendar's, not the ring's, which is why a Saturday is a
+/// Saturday on a month ring and a year ring alike: both count days from the same
+/// Monday, so `shift: 5` is the same five days wherever it is read.
+fn periodic(
+    unit: Unit,
+    amount: i64,
+    every: i64,
+    shift: i64,
+    period: (DateTime<Utc>, DateTime<Utc>),
+) -> Vec<Span> {
+    let every = every.max(1);
+    let (start, end) = period;
+    // A span as long as the turn, or longer, cannot be drawn: see
+    // `Layer::Periodic`. Months and years are counted by the calendar here, so
+    // February is short and leap years are long without any special case.
+    if amount != 0 && add(start, unit, amount) - start >= end - start {
+        return Vec::new();
+    }
+    // The first occurrence that can overlap the period: it starts before the end
+    // and reaches past the start, which is how a season or a night that began
+    // last December is still on this year's ring. `guess` deliberately
+    // overshoots, so the only walk needed is this one, back to the right one.
+    // A span that ends exactly at the start touches nothing, so only an instant
+    // can be as early as the start itself.
+    let reaches = |i: i64| {
+        let from = at(unit, every, shift, i);
+        if amount == 0 {
+            from >= start
+        } else {
+            add(from, unit, amount) > start
+        }
+    };
+    let mut i = guess(unit, every, shift, start);
+    while i > 0 && reaches(i - 1) {
+        i -= 1;
+    }
+    let mut spans = Vec::new();
+    while at(unit, every, shift, i) < end {
+        let from = at(unit, every, shift, i);
+        let mut span = Span::new(
+            from,
+            add(from, unit, amount) - from,
+            Some(&label(unit, from)),
+        );
+        span.cell = add(from, unit, every) - from;
+        spans.push(span);
+        i += 1;
+    }
+    spans
+}
+
+/// An occurrence index at or just past the one covering `t`. Months and years
+/// are counted by the calendar, so anything worked out from days alone is near
+/// the answer at best — and the short divisors below are there to overshoot
+/// rather than to be right, because `periodic` can only walk back.
+fn guess(unit: Unit, every: i64, shift: i64, t: DateTime<Utc>) -> i64 {
+    let days = (t - epoch(unit)).num_days();
+    let units = match unit {
+        Unit::Minute => days * 1440,
+        Unit::Hour => days * 24,
+        Unit::Day => days,
+        Unit::Week => days / 7,
+        Unit::Month => days / 28,
+        Unit::Year => days / 364,
+    };
+    (units - shift).div_euclid(every) + 1
+}
+
+/// The instant of occurrence `i`, counted from the unit's epoch.
+fn at(unit: Unit, every: i64, shift: i64, i: i64) -> DateTime<Utc> {
+    add(epoch(unit), unit, shift + i * every)
+}
+
+/// What a periodic span is called: the hour, the day of the month, the month.
+fn label(unit: Unit, at: DateTime<Utc>) -> String {
+    (match unit {
+        Unit::Minute => at.minute() as i64,
+        Unit::Hour => at.hour() as i64,
+        Unit::Day => at.day() as i64,
+        Unit::Week => at.iso_week().week() as i64,
+        Unit::Month => at.month() as i64,
+        Unit::Year => at.year() as i64,
+    })
+    .to_string()
+}
+
+fn epoch(unit: Unit) -> DateTime<Utc> {
+    match unit {
+        Unit::Minute | Unit::Hour | Unit::Month | Unit::Year => EPOCH,
+        // Days and weeks count from a Monday, so that index zero is one: that is
+        // what makes `shift` read as the weekday on every ring.
+        Unit::Day | Unit::Week => EPOCH + chrono::Duration::days(4),
+    }
+}
+
+/// `n` units after `t`. Months and years go through the calendar, so a month is
+/// as long as the month it starts in and February is short.
+fn add(t: DateTime<Utc>, unit: Unit, n: i64) -> DateTime<Utc> {
+    match unit {
+        Unit::Minute => t + chrono::Duration::minutes(n),
+        Unit::Hour => t + chrono::Duration::hours(n),
+        Unit::Day => t + chrono::Duration::days(n),
+        Unit::Week => t + chrono::Duration::weeks(n),
+        Unit::Month => months(t, n),
+        Unit::Year => months(t, n * 12),
+    }
+}
+
+/// `n` calendar months after `t`, either way. `chrono::Months` is unsigned, so
+/// the backwards half is a subtraction from the month before.
+fn months(t: DateTime<Utc>, n: i64) -> DateTime<Utc> {
+    let back = u32::try_from(-n).unwrap_or(u32::MAX);
+    let fwd = u32::try_from(n).unwrap_or(0);
+    let t = t.checked_sub_months(Months::new(back)).unwrap_or(t);
+    t.checked_add_months(Months::new(fwd)).unwrap_or(t)
+}
+
+fn solar(what: Solar, period: (DateTime<Utc>, DateTime<Utc>), ctx: &Ctx) -> Vec<Span> {
+    let name = what.name();
+    match what {
+        // Global instants, slid onto the wall clock by the UTC offset.
+        Solar::Equinox | Solar::Solstice => sun::events_between(period.0, period.1)
+            .into_iter()
+            .filter(|(_, n)| *n == name)
+            .map(|(t, _)| Span::new(ctx.wall(t), chrono::Duration::zero(), Some(name)))
+            .collect(),
+        // The Sun's own day: either it rises today or it does not.
+        Solar::Sunrise | Solar::Sunset | Solar::Day | Solar::Night => {
+            let Some((rise, set)) = daylight(ctx) else {
+                return Vec::new();
+            };
+            let lit = set - rise;
+            vec![match what {
+                Solar::Sunrise => Span::new(ctx.wall(rise), chrono::Duration::zero(), Some(name)),
+                Solar::Sunset => Span::new(ctx.wall(set), chrono::Duration::zero(), Some(name)),
+                Solar::Day => Span::new(ctx.wall(rise), lit, Some(name)),
+                _ => Span::new(ctx.wall(set), chrono::Duration::days(1) - lit, Some(name)),
+            }]
+        }
+    }
+}
+
+fn daylight(ctx: &Ctx) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    let loc = ctx.location?;
+    sun::daylight(ctx.now.date_naive(), loc.lat, loc.lon)
+}
+
 /// The angle of `t` on a ring: its fraction of the period, in the scale's
-/// direction, rotated by `offset_deg`, flipped once by `reversed`.
-fn ring_angle(ring: &Ring, start: DateTime<Utc>, end: DateTime<Utc>, t: DateTime<Utc>) -> f64 {
-    let span = (end - start).num_milliseconds().max(1) as f64;
-    let frac = ((t - start).num_milliseconds() as f64 / span).clamp(0.0, 1.0);
+/// direction, rotated by `offset_deg`, flipped once by `reversed`. Never clamped
+/// and never folded into 0..360, because a span is allowed to run past the end
+/// of the period and come back round — that is how a season or a night can
+/// straddle the turn.
+fn ring_angle(ring: &Ring, period: (DateTime<Utc>, DateTime<Utc>), t: DateTime<Utc>) -> f64 {
+    let span = (period.1 - period.0).num_milliseconds().max(1) as f64;
+    let frac = (t - period.0).num_milliseconds() as f64 / span;
     turn(
         ring.reversed,
         rad(ring.offset_deg + ring.scale.dir() * frac * 360.0),
     )
+}
+fn draw_span(
+    svg: &mut Svg,
+    span: &Span,
+    arc: Arc,
+    disp: &Disp,
+    band: &Band,
+    ctx: &Ctx,
+    placed: &mut Vec<f64>,
+) {
+    let (cx, cy) = (ctx.cx, ctx.cy);
+    let (r_in, r_out) = disp.band(band.r_in, band.r_out);
+    let (a0, a1) = arc.span;
+
+    if let Some(color) = &disp.background
+        && span.len > chrono::Duration::zero()
+    {
+        // Trimmed at both ends so neighbours read as separate sectors, and only
+        // while there is something left to draw. The length, not the sign: the
+        // year ring runs the other way round.
+        let gap = rad(disp.gap / 2.0);
+        if (a1 - a0).abs() > 2.0 * gap {
+            svg.path(
+                &sector(cx, cy, r_in, r_out, a0 + gap, a1 - gap),
+                ctx.palette.color(color),
+            );
+        }
+    }
+
+    if let Some(border) = &disp.border {
+        let (from, to) = match border.kind {
+            BorderKind::Line => (r_in, r_out),
+            BorderKind::Hand => (border.inner * ctx.half, r_out),
+        };
+        svg.line(
+            &radial(cx, cy, from, to, a0),
+            ctx.palette.color(&border.color),
+            border.width * ctx.half,
+        );
+    }
+
+    if let Some(label) = &disp.label
+        && let Some(text) = &span.label
+    {
+        let size = ctx.font_size * label.size;
+        let r = label_radius(label, r_in, r_out, size);
+        // Where along the span the words stand: on its leading edge, in the
+        // middle of the arc, or at its far edge. The middle of the sweep, not of
+        // the two angles folded into 0..360, which is not a thing.
+        let a = match label.anchor {
+            Anchor::Start => a0,
+            Anchor::Middle => (a0 + arc.cell) / 2.0,
+            Anchor::End => arc.cell,
+        };
+        let (x, y) = polar(cx, cy, r, a);
+        let deg = a.to_degrees().rem_euclid(360.0);
+        // Greedy: a label that would land on the last one is dropped, which is
+        // all a ring of 365 day numbers can do.
+        let wide =
+            text.chars().count() as f64 * size * 0.55 / r.max(1.0) * 180.0 / std::f64::consts::PI;
+        if placed.iter().all(|p| (deg - p).abs() > wide + 1.0) {
+            placed.push(deg);
+            svg.text(x, y, size, ctx.palette.color(&label.color), "middle", text);
+        }
+    }
+}
+
+/// Where a label sits: clear of the fill by its own height, so a bigger label
+/// stands further off the ring rather than touching it.
+fn label_radius(label: &Label, r_in: f64, r_out: f64, size: f64) -> f64 {
+    let gap = size * 1.2;
+    match label.at {
+        Where::In => r_in - gap,
+        Where::At => (r_in + r_out) / 2.0,
+        Where::Out => r_out + gap,
+    }
 }
 
 impl Ctx<'_> {
@@ -429,7 +407,7 @@ impl Ctx<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Scale;
+    use crate::{Scale, Unit};
     use chrono::NaiveDate;
 
     fn date(y: i32, m: u32, d: u32) -> DateTime<Utc> {
@@ -446,8 +424,28 @@ mod tests {
             scale,
             ..Ring::new(scale)
         };
-        let (start, end) = scale.period(t);
-        ring_angle(&ring, start, end, t).to_degrees()
+        ring_angle(&ring, scale.period(t), t).to_degrees()
+    }
+
+    /// A ring with no place to draw: every value zero, a clock to read, and a
+    /// place for the Sun.
+    fn ctx<'a>(
+        now: DateTime<Utc>,
+        palette: &'a Palette,
+        feeds: &'a BTreeMap<String, Vec<events::Event>>,
+    ) -> Ctx<'a> {
+        Ctx {
+            palette,
+            now,
+            t_ms: 0,
+            cx: 0.0,
+            cy: 0.0,
+            half: 1.0,
+            font_size: 1.0,
+            utc_offset_ms: 0,
+            location: None,
+            feeds,
+        }
     }
 
     #[test]
@@ -456,84 +454,6 @@ mod tests {
         let feb15 = ring_angle_deg(Scale::Year, date(2027, 2, 15), false);
         assert!(jan.abs() < 1e-6, "January starts at the top: {jan}");
         assert!(feb15 < jan, "the year must not run clockwise: {feb15}");
-    }
-
-    #[test]
-    fn each_season_holds_exactly_its_three_months() {
-        // Winter is Dec-Feb, spring Mar-May, summer Jun-Aug, autumn Sep-Nov.
-        let quadrant = |deg: f64| {
-            let d = deg.rem_euclid(360.0);
-            if d < 45.0 || d >= 315.0 {
-                0
-            } else if d < 135.0 {
-                3
-            } else if d < 225.0 {
-                2
-            } else {
-                1
-            }
-        };
-        let y26 = [
-            (12, date(2026, 12, 1)),
-            (1, date(2027, 1, 1)),
-            (2, date(2027, 2, 1)),
-        ];
-        let y27 = [
-            (3, date(2027, 3, 1)),
-            (4, date(2027, 4, 1)),
-            (5, date(2027, 5, 1)),
-        ];
-        let y28 = [
-            (6, date(2027, 6, 1)),
-            (7, date(2027, 7, 1)),
-            (8, date(2027, 8, 1)),
-        ];
-        let y29 = [
-            (9, date(2027, 9, 1)),
-            (10, date(2027, 10, 1)),
-            (11, date(2027, 11, 1)),
-        ];
-        for (months, q) in [(y26, 0), (y27, 1), (y28, 2), (y29, 3)] {
-            for (m, at) in months {
-                let deg = ring_angle_deg(Scale::Year, at, false);
-                assert_eq!(
-                    quadrant(deg),
-                    q,
-                    "month {m} starts in the wrong season: {deg} deg"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn season_boundaries_land_on_the_month_borders() {
-        // Winter starts on Dec 1, so its border is a month border; the same must
-        // hold for Mar 1, Jun 1 and Sep 1. This is the `nat` formula `draw` uses.
-        let start = date(2027, 1, 1);
-        let end = date(2028, 1, 1);
-        let span = (end - start).num_milliseconds().max(1) as f64;
-        let nat = |t: DateTime<Utc>| {
-            Scale::Year.dir() * (t - start).num_milliseconds() as f64 / span * 360.0
-        };
-        for m in [12, 3, 6, 9] {
-            let at = if m == 12 {
-                date(2026, 12, 1)
-            } else {
-                date(2027, m, 1)
-            };
-            // The season border and the month tick come from the same angle of
-            // the same instant, so they cannot drift apart (mod 360: the
-            // December border sits on the other side of the turn).
-            let tick = ring_angle_deg(Scale::Year, at, false);
-            let border = nat(at);
-            assert!(
-                (tick - border)
-                    .rem_euclid(360.0)
-                    .min((border - tick).rem_euclid(360.0))
-                    < 1e-6,
-                "season {m} border {border} and month tick {tick} disagree"
-            );
-        }
     }
 
     #[test]
@@ -615,5 +535,245 @@ mod tests {
         let (start, end) = Scale::Year.period(date(2026, 6, 15));
         assert_eq!((start.year(), start.month(), start.day()), (2026, 1, 1));
         assert_eq!((end.year(), end.month(), end.day()), (2027, 1, 1));
+    }
+
+    #[test]
+    fn a_period_covers_its_own_turn_and_nothing_more() {
+        let year = Scale::Year.period(date(2026, 6, 15));
+        // Twelve months on a year ring, seven days on a week ring, and the
+        // hours of one day.
+        let got =
+            |unit, amount, every, shift, period| periodic(unit, amount, every, shift, period).len();
+        assert_eq!(got(Unit::Month, 1, 1, 0, year), 12);
+        assert_eq!(got(Unit::Month, 0, 3, 0, year), 4);
+        assert_eq!(got(Unit::Day, 0, 1, 0, year), 365);
+        assert_eq!(
+            got(Unit::Hour, 0, 1, 0, Scale::Hour24.period(date(2026, 6, 15))),
+            24
+        );
+        assert_eq!(
+            got(Unit::Day, 1, 1, 0, Scale::Week.period(date(2026, 6, 15))),
+            7
+        );
+    }
+
+    #[test]
+    fn a_weekend_is_two_days_from_saturday_on_any_ring() {
+        // The same Saturdays on every ring, because days count from a Monday
+        // everywhere and not from the start of whatever turn is being drawn: a
+        // month ring gets its four, a year ring its fifty-two, a week ring one.
+        for scale in [Scale::Week, Scale::Month, Scale::Year] {
+            let spans = periodic(Unit::Day, 2, 7, 5, scale.period(date(2026, 6, 17)));
+            assert!(!spans.is_empty(), "{scale:?}");
+            assert!(
+                spans
+                    .iter()
+                    .all(|s| s.at.weekday().num_days_from_monday() == 5),
+                "{scale:?}: weekends start on a Saturday"
+            );
+            assert!(
+                spans.iter().all(|s| s.len == chrono::Duration::days(2)),
+                "{scale:?}: Saturday runs into Sunday"
+            );
+            // And the next one is a week later, not tomorrow.
+            assert!(
+                spans
+                    .windows(2)
+                    .all(|w| w[1].at - w[0].at == chrono::Duration::days(7)),
+                "{scale:?}: weekends repeat weekly"
+            );
+        }
+        let week = periodic(Unit::Day, 2, 7, 5, Scale::Week.period(date(2026, 6, 17)));
+        assert_eq!(week.len(), 1);
+    }
+
+    #[test]
+    fn a_span_longer_than_the_turn_is_not_drawn() {
+        // A season is three months, which is most of a month ring.
+        assert!(
+            periodic(
+                Unit::Month,
+                3,
+                12,
+                11,
+                Scale::Month.period(date(2026, 6, 15))
+            )
+            .is_empty()
+        );
+        // On a year ring both Decembers reach into the turn, and they are the
+        // same arc twice: one starts before the period, one starts inside it.
+        assert_eq!(
+            periodic(
+                Unit::Month,
+                3,
+                12,
+                11,
+                Scale::Year.period(date(2026, 6, 15))
+            )
+            .len(),
+            2
+        );
+    }
+
+    /// Winter starts in December, crosses the turn, and is still one arc: the
+    /// season sector and the month border come from the same instants, so they
+    /// cannot drift apart.
+    #[test]
+    fn winter_is_one_sector_straddling_the_top_of_the_year() {
+        let period = Scale::Year.period(date(2026, 6, 15));
+        let spans = periodic(Unit::Month, 3, 12, 11, period);
+        // Both Decembers reach into the turn, and they are the same arc twice:
+        // the ring repeats, so December 2025 and December 2026 land identically.
+        assert_eq!(spans.len(), 2);
+        let winter = &spans[1];
+        assert_eq!((winter.at.year(), winter.at.month()), (2026, 12));
+        // Three months by the calendar, leap year or not.
+        assert_eq!((winter.at + winter.len).month(), 3);
+
+        let ring = Ring::new(Scale::Year);
+        // Both edges, folded back into one turn so the crossing does not read as
+        // a sign change.
+        let deg = |t| ring_angle(&ring, period, t).to_degrees().rem_euclid(360.0);
+        let (from, to) = (deg(winter.at), deg(winter.at + winter.len));
+        // The year runs counter-clockwise, so December is just past the top and
+        // March is that far the other side of it: winter straddles twelve.
+        assert!(
+            from < 45.0 && to > 300.0,
+            "winter is not round the top: {from}..{to}"
+        );
+        let mid = ((from + (to - 360.0)) / 2.0).rem_euclid(360.0);
+        assert!(
+            mid.min(360.0 - mid) < 20.0,
+            "winter should sit on the top, not at {mid}"
+        );
+    }
+
+    #[test]
+    fn an_instant_label_is_the_number_the_pattern_gave_it() {
+        let period = Scale::Hour24.period(date(2026, 6, 15));
+        let spans = periodic(Unit::Hour, 0, 6, 0, period);
+        assert_eq!(
+            spans
+                .iter()
+                .filter_map(|s| s.label.clone())
+                .collect::<Vec<_>>(),
+            ["0", "6", "12", "18"]
+        );
+        // And the days of a month ring, which is what a month ring's numbers are.
+        let month = periodic(Unit::Day, 0, 1, 0, Scale::Month.period(date(2026, 2, 15)));
+        assert_eq!(month.len(), 28, "February 2026");
+        assert_eq!(month[0].label.as_deref(), Some("1"));
+        assert_eq!(month[27].label.as_deref(), Some("28"));
+    }
+
+    #[test]
+    fn daylight_and_night_are_two_spans_that_make_the_day() {
+        let palette = Palette::resolve(crate::Theme::Dark, &Default::default());
+        let feeds = BTreeMap::new();
+        let now = date(2026, 6, 15) + chrono::Duration::hours(12);
+        let mut ctx = ctx(now, &palette, &feeds);
+        ctx.location = Some(crate::Location {
+            lat: 52.52,
+            lon: 13.405,
+        });
+        let period = Scale::Hour24.period(now);
+        let (day, night) = (
+            solar(Solar::Day, period, &ctx),
+            solar(Solar::Night, period, &ctx),
+        );
+        assert_eq!(day.len(), 1);
+        assert_eq!(day[0].len + night[0].len, chrono::Duration::days(1));
+        assert!(
+            day[0].len > chrono::Duration::hours(16),
+            "midsummer is more lit than not: {:?}",
+            day[0].len
+        );
+        // Without a place there is no sunrise, and no span to draw.
+        ctx.location = None;
+        assert!(solar(Solar::Day, period, &ctx).is_empty());
+    }
+
+    #[test]
+    fn a_layer_with_nothing_to_draw_draws_nothing() {
+        let bare: crate::Config =
+            serde_json::from_str(r#"{"rings":[{"scale":"week","layers":[{"kind":"now"}]}]}"#)
+                .unwrap();
+        let none: crate::Config = serde_json::from_str(r#"{"rings":[{"scale":"week"}]}"#).unwrap();
+        assert_eq!(
+            crate::render(&bare, 0),
+            crate::render(&none, 0),
+            "one empty layer is no layer"
+        );
+    }
+
+    /// Every season fills the year ring, and the year runs the other way round,
+    /// so a fill whose arc is measured backwards is still a fill. (It was not,
+    /// once: the gap guard compared the two ends of an arc without their order.)
+    #[test]
+    fn a_label_can_stand_in_the_middle_of_its_span() {
+        // Seven day numbers round a week ring, told apart by where they sit: on
+        // the boundary, in the middle of the day, at its far edge.
+        let x_of_first = |anchor: &str| {
+            let cfg: crate::Config = serde_json::from_str(&format!(
+                r#"{{"rings":[{{"scale":"week","layers":[{{"kind":"periodic","unit":"day",
+                     "shift":"mon","disp":{{"label":{{"anchor":"{anchor}"}}}}}}]}}]}}"#
+            ))
+            .unwrap();
+            let svg = crate::render(&cfg, 1_800_000_000_000);
+            let at = svg.find("<text x=\"").expect("a label") + 9;
+            // Measured from the middle of the canvas, which is where the top of
+            // a ring is: x = half the size when a label sits at twelve o'clock.
+            let x: f64 = svg[at..].split('"').next().unwrap().parse().unwrap();
+            x - 512.0
+        };
+        // Monday starts at the top of the ring, so a label on its start is
+        // straight up the middle and the other two are a twelfth of a week away.
+        let start = x_of_first("start");
+        let middle = x_of_first("middle");
+        let end = x_of_first("end");
+        assert!(start.abs() < 1.0, "on the boundary: {start}");
+        assert!(middle > 20.0, "in the middle of the day: {middle}");
+        assert!(end > middle * 1.8, "at the far edge: {end} vs {middle}");
+    }
+
+    #[test]
+    fn an_instant_label_takes_the_middle_of_the_gap_to_the_next_one() {
+        // A month number is a zero-length span on the first of a month, which has
+        // no middle of its own — so `middle` means the middle of the cell, which
+        // is what "in the middle of the month" is.
+        let x_of_first = |anchor: &str| {
+            let cfg: crate::Config = serde_json::from_str(&format!(
+                r#"{{"rings":[{{"scale":"year","offset_deg":0,"layers":[{{"kind":"periodic",
+                     "unit":"month","amount":0,"shift":"jan","disp":{{"label":{{"anchor":"{anchor}"}}}}}}]}}]}}"#
+            ))
+            .unwrap();
+            let svg = crate::render(&cfg, 1_800_000_000_000);
+            let at = svg.find("<text x=\"").expect("a label") + 9;
+            svg[at..].split('"').next().unwrap().parse::<f64>().unwrap() - 512.0
+        };
+        // The year runs counter-clockwise, so the middle of January is left of
+        // the top and the end of January further left still.
+        let start = x_of_first("start");
+        let middle = x_of_first("middle");
+        let end = x_of_first("end");
+        assert!(start.abs() < 1.0, "on the first: {start}");
+        assert!(middle < -20.0, "half way through: {middle}");
+        assert!(end < middle * 1.8, "on the last: {end} vs {middle}");
+    }
+
+    #[test]
+    fn the_seasons_fill_the_year_ring() {
+        let palette = Palette::resolve(crate::Theme::Dark, &Default::default());
+        let cfg = crate::Config {
+            rings: vec![Ring::new(Scale::Year)],
+            ..Default::default()
+        };
+        let svg = crate::render(&cfg, 1_800_000_000_000);
+        for slot in ["winter", "spring", "summer", "autumn"] {
+            assert!(
+                svg.contains(&format!("fill=\"{}\"", palette.color(slot))),
+                "{slot} is missing from the year ring"
+            );
+        }
     }
 }

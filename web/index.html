@@ -39,11 +39,14 @@
     .ringhead::before { content: "▸"; color: #4cc9f0 }
     .ring[open] > .ringhead::before { content: "▾" }
     .ringtitle { font-weight: 600; color: #4cc9f0; min-width: 52px }
-    .ringhead select { flex: 1 }
+    /* Layers are the ring, so they are always on show: no folding here. */
+    .layers { margin: 4px 0 4px 4px; padding-left: 6px; border-left: 1px dashed #2c323d }
+    .layer { margin: 6px 0 }
+    .layerhead { display: flex; gap: 6px; align-items: center; margin-bottom: 2px }
+    .layertitle { font-weight: 600; color: #ff9f1c; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+    .ctl input[type=text] { width: 7em }
     .auto { display: flex; gap: 3px; align-items: center; color: #9aa4b2; font-size: 12px }
     button { border: 1px solid #39404d; border-radius: 4px; background: #0e1116; color: inherit; cursor: pointer; font: inherit; padding: 1px 7px }
-    .scroll { max-height: 12em; overflow: auto; border-top: 1px solid #2c323d; margin-top: 4px }
-    .scroll .row > label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
     #boot { margin: 2em; color: #e63946 }
   </style>
 </head>

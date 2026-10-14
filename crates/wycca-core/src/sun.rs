@@ -58,11 +58,14 @@ pub fn event(year: i32, target: f64) -> DateTime<Utc> {
     lo
 }
 
-/// Every event between `from` and `to` inclusive.
-pub fn events_between(from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<DateTime<Utc>> {
+/// Every event between `from` and `to` inclusive, each with its name.
+pub fn events_between(
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Vec<(DateTime<Utc>, &'static str)> {
     (from.year()..=to.year())
-        .flat_map(|year| EVENTS.map(|(deg, _)| event(year, deg)))
-        .filter(|t| *t >= from && *t <= to)
+        .flat_map(|year| EVENTS.map(|(deg, name)| (event(year, deg), name)))
+        .filter(|(t, _)| *t >= from && *t <= to)
         .collect()
 }
 
@@ -221,6 +224,9 @@ mod tests {
         let cycle = utc(2025, 12, 1);
         let found = events_between(cycle, utc(2026, 12, 1));
         assert_eq!(found.len(), 4);
-        assert_eq!(found.last().map(|t| (t.year(), t.month())), Some((2026, 9)));
+        assert_eq!(
+            found.last().map(|(t, name)| (t.year(), t.month(), *name)),
+            Some((2026, 9, "equinox"))
+        );
     }
 }

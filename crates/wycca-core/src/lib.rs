@@ -12,7 +12,8 @@ mod svg;
 pub mod ui;
 
 pub use config::{
-    Config, EventStyle, Font, Layers, Location, Overrides, Palette, Ring, Scale, Theme,
+    Border, BorderKind, Config, DEFAULT_FEED, Disp, Font, Label, Layer, Location, Offsets,
+    Overrides, Palette, Ring, Scale, Solar, Theme, Unit, Where,
 };
 pub use rings::{Band, Ctx};
 pub use svg::Svg;
@@ -88,7 +89,7 @@ pub fn render(cfg: &Config, t_ms: u64) -> String {
         location: cfg
             .location
             .map(|l| resolve_location(l, cfg.utc_offset_ms.unwrap_or(0))),
-        events: &cfg.events,
+        feeds: &cfg.feeds,
     };
     for (ring, band) in cfg.rings.iter().zip(layout(cfg)) {
         rings::draw(&mut svg, ring, &band, &ctx);
@@ -117,7 +118,7 @@ mod tests {
     #[test]
     fn the_default_preset_draws_something() {
         let svg = render(&Config::default(), 1_800_000_000_000);
-        assert!(svg.contains("<circle") && svg.contains("<path") && svg.contains("<text"));
+        assert!(svg.contains("<path") && svg.contains("<text"));
     }
 
     #[test]
@@ -152,11 +153,11 @@ mod tests {
         let t = 1_800_000_000_000;
         for scale in ["hour24", "week", "year"] {
             let plain: Config = serde_json::from_str(&format!(
-                r#"{{"rings":[{{"scale":"{scale}","layers":{{"today_marker":true}}}}]}}"#
+                r#"{{"rings":[{{"scale":"{scale}","layers":[{{"kind":"now","disp":{{"border":{{"color":"accent"}}}}}}]}}]}}"#
             ))
             .unwrap();
             let flipped: Config = serde_json::from_str(&format!(
-                r#"{{"rings":[{{"scale":"{scale}","reversed":true,"layers":{{"today_marker":true}}}}]}}"#
+                r#"{{"rings":[{{"scale":"{scale}","reversed":true,"layers":[{{"kind":"now","disp":{{"border":{{"color":"accent"}}}}}}]}}]}}"#
             ))
             .unwrap();
             assert_ne!(render(&plain, t), render(&flipped, t), "{scale}");

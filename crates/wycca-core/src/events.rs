@@ -23,6 +23,17 @@ pub enum Kind {
     Busy,
 }
 
+impl Kind {
+    /// The other half of `#[serde(rename_all = "snake_case")]`, so a layer's
+    /// title can spell the filter the way the config spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Free => "free",
+            Self::Busy => "busy",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Event {

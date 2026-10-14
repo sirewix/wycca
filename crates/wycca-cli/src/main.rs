@@ -15,8 +15,8 @@ USAGE
 
 OPTIONS
     -c, --config <PATH>    config, .json or .yaml; defaults to the built-in preset
-    -e, --events <PATH>    whole-day events from an .ics calendar, merged into
-                           whatever the config already lists
+    -e, --events <PATH>    whole-day events from an .ics calendar, added to the
+                           `holidays` feed whatever the config already lists
     -a, --at <TIME>        unix millis or RFC 3339; defaults to now
     -s, --svg <PATH>       write SVG
     -p, --png <PATH>       write PNG
@@ -103,10 +103,15 @@ fn run() -> Result<(), String> {
 
     if let Some(path) = &args.events {
         let ics = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        cfg.events.extend(wycca_core::events::parse(&ics));
-        cfg.events.sort_by_key(|e| e.date);
-        cfg.events
-            .dedup_by(|a, b| a.date == b.date && a.label == b.label);
+        // Into the feed the year ring's holidays layer already points at, so a
+        // plain `--events` needs no config to know where its days go.
+        let feed = cfg
+            .feeds
+            .entry(wycca_core::DEFAULT_FEED.to_owned())
+            .or_default();
+        feed.extend(wycca_core::events::parse(&ics));
+        feed.sort_by_key(|e| e.date);
+        feed.dedup_by(|a, b| a.date == b.date && a.label == b.label);
     }
 
     let t = match &args.at {

@@ -8,6 +8,7 @@
 //! Every function that returns a pointer owns it until `wycca_free`, whose length
 //! comes from `wycca_len`. The one exception is `wycca_scratch`.
 
+use crate::Layer;
 use std::{
     alloc::{Layout, alloc, dealloc},
     sync::atomic::{AtomicUsize, Ordering},
@@ -28,7 +29,7 @@ pub extern "C" fn wycca_form() -> *mut u8 {
     owned(&serde_json::to_string(&crate::ui::form()).unwrap())
 }
 
-/// One ring at `scale` as JSON, with every field filled in from
+/// One ring at `scale` as JSON, with every layer filled in from
 /// [`crate::Ring::new`]. The form describes a ring's controls but not their
 /// starting values, so adding a ring goes through here rather than through a
 /// half-written object in the UI.
@@ -48,8 +49,41 @@ pub extern "C" fn wycca_ring(scale: *const u8, len: usize) -> *mut u8 {
     owned(&json)
 }
 
-/// Every whole-day event in an .ics feed, as a JSON array. The page merges this
-/// into `Config::events` exactly as the CLI's `--events` does.
+/// One layer of `kind` as JSON, with every field filled in from
+/// [`crate::Layer::new`]. Same reasoning as `wycca_ring`, one level down: the
+/// form says which controls a layer has, not what they start at.
+///
+/// # Safety
+/// `kind` must point to `len` readable bytes of UTF-8 naming a layer kind.
+#[unsafe(no_mangle)]
+pub extern "C" fn wycca_layer(kind: *const u8, len: usize) -> *mut u8 {
+    let kind = unsafe { std::str::from_utf8(std::slice::from_raw_parts(kind, len)) };
+    let json = match kind.ok().and_then(Layer::new) {
+        Some(layer) => serde_json::to_string(&layer).unwrap(),
+        None => "<layer>unknown kind</layer>".into(),
+    };
+    owned(&json)
+}
+
+/// What to call a layer in the UI: its source, spelled the way the config spells
+/// it. The core owns the words so a card's title and its fields cannot disagree.
+///
+/// # Safety
+/// `json` must point to `len` readable bytes of a serialised layer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wycca_title(json: *const u8, len: usize) -> *mut u8 {
+    let json = unsafe { std::str::from_utf8(std::slice::from_raw_parts(json, len)) };
+    owned(&match json
+        .ok()
+        .and_then(|j| serde_json::from_str::<Layer>(j).ok())
+    {
+        Some(layer) => layer.title(),
+        None => String::new(),
+    })
+}
+
+/// Every whole-day event in an .ics feed, as a JSON array. The page puts it in
+/// `Config::feeds` exactly as the CLI's `--events` does, under the same name.
 ///
 /// # Safety
 /// `ics` must point to `len` readable bytes of UTF-8, and the buffer must be at
@@ -138,24 +172,32 @@ mod tests {
 
     #[test]
     fn render_round_trips_through_the_c_abi() {
-        let json = br#"{"size":256,"rings":[{"scale":"week","layers":{"day_sectors":true}}]}"#;
+        let json = br#"{"size":256,"rings":[{"scale":"week","layers":[
+            {"kind":"periodic","unit":"day","amount":1,"shift":0,"disp":{"background":"muted"}},
+            {"kind":"periodic","unit":"day","amount":2,"every":7,"shift":5,"disp":{"background":"weekend"}}
+        ]}]}"#;
         let ptr = unsafe { wycca_render(json.as_ptr(), json.len(), 1_800_000_000_000.0) };
         let svg = take(ptr);
         assert!(svg.contains("<path") && svg.contains("width=\"256\""));
     }
 
     #[test]
-    fn the_page_can_ask_for_a_default_config_a_form_and_a_ring() {
+    fn the_page_can_ask_for_a_default_config_a_form_a_ring_and_a_layer() {
         let config: serde_json::Value = serde_json::from_str(&take(wycca_default())).unwrap();
         assert_eq!(config["rings"][0]["scale"], "hour24");
 
         let form: serde_json::Value = serde_json::from_str(&take(wycca_form())).unwrap();
         assert!(form["sections"].as_array().unwrap().len() >= 4);
+        assert!(form["layer_fields"]["periodic"].as_array().unwrap().len() > 4);
 
         let ring: serde_json::Value =
             serde_json::from_str(&take(wycca_ring(b"week".as_ptr(), 4))).unwrap();
         assert_eq!(ring["scale"], "week");
         assert_eq!(ring["thickness"], 0.04, "a new ring starts at its Default");
+
+        let layer = take(wycca_layer(b"solar".as_ptr(), 5));
+        let title = take(unsafe { wycca_title(layer.as_ptr(), layer.len()) });
+        assert_eq!(title, "daylight", "the core names its own layers");
     }
 
     #[test]
