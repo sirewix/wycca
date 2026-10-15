@@ -34,11 +34,66 @@
             };
             cargoLock.lockFile = ./Cargo.lock;
           };
+
+          # The browser build, as a package: the same wasm `web/release.sh`
+          # emits, next to the page it runs in. `buildRustPackage` is here only
+          # because it knows how to vendor the crates for the network-less
+          # sandbox; the build itself is one cargo invocation.
+          webWasm = pkgs.rustPlatform.buildRustPackage {
+            pname = "wycca-web";
+            inherit version;
+            src = wycca.src;
+            cargoLock.lockFile = ./Cargo.lock;
+            doCheck = false;
+            # rustc shells out to `wasm-ld`, and nixpkgs' rustc ships the wasm32
+            # std but not the linker that turns .o into a .wasm.
+            nativeBuildInputs = [ pkgs.lld ];
+            buildPhase = ''
+              runHook preBuild
+              cargo build --profile wasm-release -p wycca-core --target wasm32-unknown-unknown
+              runHook postBuild
+            '';
+            installPhase = ''
+              runHook preInstall
+              install -Dm644 \
+                target/wasm32-unknown-unknown/wasm-release/wycca_core.wasm \
+                $out/wycca.wasm
+              runHook postInstall
+            '';
+          };
+
+          # The page itself: two tracked files out of `web/`, so the generated
+          # wasm next to them is not dragged into the store with it.
+          webFiles = lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions [ ./web/index.html ./web/ui.js ];
+          };
+
+          # A deployed page fetches its wasm like any other asset, so it has no
+          # base64 fallback — the same two files minus one that `web/release.sh`
+          # drops with a `grep`.
+          web = pkgs.runCommand "wycca-web-${version}"
+            {
+              nativeBuildInputs = [ pkgs.binaryen ];
+            } ''
+              cp ${webWasm}/wycca.wasm .
+              cp ${webFiles}/web/ui.js .
+              grep -v 'wycca\.wasm\.js' ${webFiles}/web/index.html >index.html
+              # Re-encode only; see the note in web/release.sh for why -Oz is off.
+              wasm-opt \
+                --enable-bulk-memory --enable-bulk-memory-opt \
+                --enable-nontrapping-float-to-int --enable-multivalue \
+                --enable-reference-types --strip-debug --strip-producers \
+                wycca.wasm -o wycca.wasm.tmp && mv wycca.wasm.tmp wycca.wasm
+              mkdir -p $out
+              cp index.html ui.js wycca.wasm $out/
+            '';
         in
         {
           packages = {
             default = wycca;
             inherit wycca;
+            inherit web;
           };
 
           apps.default = {

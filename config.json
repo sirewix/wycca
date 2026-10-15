@@ -1,14 +1,15 @@
 {
-  "size": 2048,
+  "size": 1024,
   "theme": "dark",
-  "spacing": 0.45,
+  "spacing": 0.1,
   "outer_radius": 0.9,
-  "location": { "lat": 51.17, "lon": 71.45 },
+  "location": { "lat": 51.5074, "lon": -0.1278 },
+  "utc_offset_ms": 3600000,
   "font": { "family": "DejaVu Sans", "size": 0.016 },
   "rings": [
     {
       "scale": "hour24",
-      "thickness": 0.008,
+      "thickness": 0.014,
       "layers": [
         { "kind": "solar", "what": "day", "disp": { "background": "day" } },
         { "kind": "solar", "what": "night", "disp": { "background": "night" } },
@@ -85,9 +86,7 @@
         { "kind": "solar", "what": "solstice",
           "disp": { "border": { "color": "solar", "width": 0.004 }, "offsets": { "inner": -10, "outer": -10 } } },
         { "kind": "ics", "source": "holidays", "only": "free",
-          "disp": { "border": { "color": "weekend", "width": 0.004 },
-                    "offsets": { "inner": -2, "outer": -2 },
-                    "label": { "at": "at", "color": "border", "size": 0.8 } } },
+          "disp": { "background": "weekend" } },
         { "kind": "now",
           "disp": { "border": { "color": "accent", "width": 0.008 }, "offsets": { "inner": -10, "outer": -10 } } }
       ]

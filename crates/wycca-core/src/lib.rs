@@ -163,4 +163,25 @@ mod tests {
             assert_ne!(render(&plain, t), render(&flipped, t), "{scale}");
         }
     }
+
+    /// `config.schema.yaml`, which is what an editor validates against — a JSON
+    /// Schema, written as YAML because a person reads this one. Rewritten by this
+    /// test, so the file cannot drift from the structs; the assert is how a drift
+    /// announces itself. Behind the `schema` feature because the derive is dead
+    /// weight in a build whose bytes are counted.
+    #[cfg(feature = "schema")]
+    #[test]
+    fn the_committed_schema_is_the_one_the_config_describes() {
+        let out = format!(
+            "---\n{}",
+            serde_yml::to_string(&schemars::schema_for!(Config)).unwrap()
+        );
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config.schema.yaml");
+        let old = std::fs::read_to_string(path).unwrap_or_default();
+        std::fs::write(path, &out).unwrap();
+        assert_eq!(
+            old, out,
+            "config.schema.yaml was stale, and has been rewritten"
+        );
+    }
 }

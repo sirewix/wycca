@@ -13,3 +13,13 @@ crate-type = ["rlib", "cdylib"]
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
+# The JSON schema for editors, and nothing else. The derive pulls the whole schema
+# generator into the crate, which is dead weight in a wasm whose size is measured
+# in bytes, so the feature is off by default and the page never sees it. It is
+# written as YAML because that is what a person reads; the config itself stays
+# JSON, and `serde_yml` is here only to write this one file.
+schemars = { version = "1", optional = true, features = ["chrono04"] }
+serde_yml = { version = "0.0.13", optional = true }
+
+[features]
+schema = ["dep:schemars", "dep:serde_yml"]

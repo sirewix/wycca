@@ -10,6 +10,7 @@ use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Theme {
     #[default]
@@ -150,6 +151,7 @@ impl Palette {
 
 /// Partial palette. `deny_unknown_fields` so a typo is a parse error, not silence.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct Overrides {
     pub background: Option<String>,
@@ -174,6 +176,7 @@ pub struct Overrides {
 /// Where on the Earth. No platform will tell you this, so it is configuration.
 /// Needed only for sunrise and sunset.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Location {
     /// Degrees north, -90..90.
@@ -183,6 +186,7 @@ pub struct Location {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct Font {
     pub family: String,
@@ -212,6 +216,7 @@ impl Default for Font {
 /// on one ring — and two rings of the same scale — can never disagree about
 /// where anything sits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Scale {
     /// The current day, midnight to midnight.
@@ -273,6 +278,7 @@ impl Scale {
 /// `shift` mean the same thing on every ring — a weekday on a day ring is still
 /// a Saturday on a year ring, because both count from the same Monday.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Unit {
     Year,
@@ -336,6 +342,7 @@ const DAYS: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 /// lets a config say `shift: sat` while the page writes a plain number for an
 /// hour.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum Shift {
     Name(String),
@@ -399,6 +406,7 @@ pub const DEFAULT_FEED: &str = "holidays";
 /// outer half, and a negative number goes past the edge — which is what a mark
 /// that has to be seen from across the room does.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct Offsets {
     pub inner: f64,
@@ -417,6 +425,7 @@ impl Default for Offsets {
 /// Where a label sits against a fill: `in` is inside its near edge, `at` is on
 /// it, `out` is past its far edge.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Where {
     #[default]
@@ -428,6 +437,7 @@ pub enum Where {
 /// Along the span: a tick's label stands on the tick (`start`), a day's number in
 /// the middle of its day (`middle`), a month at its far edge (`end`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Anchor {
     #[default]
@@ -439,6 +449,7 @@ pub enum Anchor {
 /// What text a span carries, if any. The source decides the words; this decides
 /// whether they are drawn, where across the ring, and which end they stand at.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct Label {
     /// Across the ring: inside the fill, on it, or past its far edge.
@@ -463,6 +474,7 @@ impl Default for Label {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum BorderKind {
     /// Across the span's leading edge.
@@ -476,6 +488,7 @@ pub enum BorderKind {
 /// zero-length span, a rule between two neighbours, or a notch pointing at a
 /// holiday.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct Border {
     pub kind: BorderKind,
@@ -504,6 +517,7 @@ impl Default for Border {
 /// How a span is drawn. Every part of it is optional: a layer with nothing set
 /// draws nothing, which is how a span of colour alone differs from a bare tick.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct Disp {
     /// Fill the span. `None` for no fill.
@@ -538,6 +552,7 @@ impl Disp {
 /// The sun's own spans and instants. Nothing here is periodic: it needs a place
 /// and a day.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Solar {
     /// Sunrise to sunset.
@@ -570,6 +585,7 @@ impl Solar {
 /// draw is a new variant here plus a block in `rings::spans` — there is no
 /// per-layer-type drawing code anywhere else.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Layer {
     /// Spans a pattern generates. `amount` units long, starting `shift` units into
@@ -721,6 +737,7 @@ impl Layer {
 
 /// One ring: a scale, a place on the canvas, and the layers drawn on it.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Ring {
     /// Pin the ring to an exact outer radius instead of letting `layout()` place it.
@@ -906,22 +923,13 @@ impl Ring {
                     fill(Layer::periodic(D, 2, 7, "sat"), "weekend"),
                     mark(Layer::solar(Equinox), "solar"),
                     mark(Layer::solar(Solstice), "solar"),
-                    // A holiday crosses the ring as a rule rather than filling it:
-                    // the weekends are already red sectors, and two kinds of red
-                    // band on one ring are one kind of red band.
-                    line(
+                    // A holiday is a sector, like a weekend: one day of red across
+                    // the ring. It carries no label — on a ring this thin the
+                    // names run over each other and over the month numbers, and
+                    // a ring is read at a glance, not read out.
+                    fill(
                         Layer::ics(DEFAULT_FEED, Some(crate::events::Kind::Free)),
                         "weekend",
-                        MARK,
-                        -2.0,
-                        -2.0,
-                    ),
-                    caption(
-                        Layer::ics(DEFAULT_FEED, Some(crate::events::Kind::Free)),
-                        "border",
-                        Where::At,
-                        Anchor::Start,
-                        0.8,
                     ),
                     today(),
                 ];
@@ -938,7 +946,16 @@ pub(crate) fn date(y: i32, m: u32, d: u32) -> DateTime<Utc> {
         .and_utc()
 }
 
+/// Keeps the default preset — forty-odd layers of JSON — out of the schema. It is
+/// in [`Config::default`] and in `config.json`; a third copy in a generated file is
+/// one more thing to regenerate for nothing.
+#[cfg(feature = "schema")]
+fn no_default(schema: &mut schemars::Schema) {
+    schema.remove("default");
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Canvas side in pixels. Everything else is a fraction of this.
@@ -950,6 +967,7 @@ pub struct Config {
     pub font: Font,
     /// Rings are laid out inner to outer in this order. Each one's `radius` may
     /// pin it in place; otherwise see `spacing`.
+    #[cfg_attr(feature = "schema", schemars(transform = no_default))]
     pub rings: Vec<Ring>,
     /// Whole-day events, by feed name. The CLI reads them from `--events`, the
     /// browser from a file picker; nothing here ever touches the network.

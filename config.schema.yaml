@@ -1,0 +1,565 @@
+---
+$schema: "https://json-schema.org/draft/2020-12/schema"
+title: Config
+type: object
+properties:
+  background:
+    description: "`None` falls back to the theme background, `\"none\"` means transparent."
+    type:
+      - string
+      - "null"
+    default: null
+  colors:
+    $ref: "#/$defs/Overrides"
+    default:
+      accent: null
+      autumn: null
+      background: null
+      border: null
+      day: null
+      foreground: null
+      muted: null
+      night: null
+      solar: null
+      spring: null
+      summer: null
+      week_marks: null
+      weekend: null
+      winter: null
+  feeds:
+    description: |-
+      Whole-day events, by feed name. The CLI reads them from `--events`, the
+      browser from a file picker; nothing here ever touches the network.
+    type: object
+    additionalProperties:
+      type: array
+      items:
+        $ref: "#/$defs/Event"
+    default: {}
+  font:
+    $ref: "#/$defs/Font"
+    default:
+      family: sans-serif
+      size: 0.02
+      weight: 400
+  inner_radius:
+    description: Annulus the automatic layout spreads rings over.
+    type: number
+    format: double
+    default: 0.0
+  location:
+    description: Only needed for sunrise and sunset.
+    anyOf:
+      - $ref: "#/$defs/Location"
+      - type: "null"
+    default: null
+  outer_radius:
+    type: number
+    format: double
+    default: 0.9
+  rings:
+    description: |-
+      Rings are laid out inner to outer in this order. Each one's `radius` may
+      pin it in place; otherwise see `spacing`.
+    type: array
+    items:
+      $ref: "#/$defs/Ring"
+  size:
+    description: Canvas side in pixels. Everything else is a fraction of this.
+    type: integer
+    format: uint32
+    default: 1024
+    minimum: 0
+  spacing:
+    description: |-
+      0 spaces the rings evenly, 1 squeezes the inner ones together and pushes
+      the outer ones out (`t^(1 + 2 * spacing)`). One slider's worth of curve.
+    type: number
+    format: double
+    default: 0.01
+  theme:
+    $ref: "#/$defs/Theme"
+    default: dark
+  utc_offset_ms:
+    description: |-
+      Offset of the wall clock from UTC, in millis. Solar events are global
+      instants; this is what lands them on the right hour. The CLI fills it in
+      from the system zone, so it is only worth setting by hand when rendering
+      someone else's clock.
+    type:
+      - integer
+      - "null"
+    format: int64
+    default: null
+additionalProperties: false
+$defs:
+  Anchor:
+    description: |-
+      Along the span: a tick's label stands on the tick (`start`), a day's number in
+      the middle of its day (`middle`), a month at its far edge (`end`).
+    type: string
+    enum:
+      - start
+      - middle
+      - end
+  Border:
+    description: |-
+      The stroke a span draws. One at its leading edge, which is a tick for a
+      zero-length span, a rule between two neighbours, or a notch pointing at a
+      holiday.
+    type: object
+    properties:
+      color:
+        description: "Palette slot or `#rrggbb`."
+        type: string
+        default: background
+      inner:
+        description: Where a hand starts, as a fraction of the half-canvas. Only `hand` reads it.
+        type: number
+        format: double
+        default: 0.0
+      kind:
+        $ref: "#/$defs/BorderKind"
+        default: line
+      width:
+        description: Stroke width, as a fraction of the half-canvas.
+        type: number
+        format: double
+        default: 0.001
+    additionalProperties: false
+  BorderKind:
+    oneOf:
+      - description: Across the span's leading edge.
+        type: string
+        const: line
+      - description: "From the centre out to the ring: a clock hand."
+        type: string
+        const: hand
+  Disp:
+    description: |-
+      How a span is drawn. Every part of it is optional: a layer with nothing set
+      draws nothing, which is how a span of colour alone differs from a bare tick.
+    type: object
+    properties:
+      background:
+        description: Fill the span. `None` for no fill.
+        type:
+          - string
+          - "null"
+      border:
+        description: Stroke at the span's leading edge. `None` for none.
+        anyOf:
+          - $ref: "#/$defs/Border"
+          - type: "null"
+      gap:
+        description: |-
+          Degrees trimmed off each end of the fill, so neighbours read as separate
+          sectors instead of one block.
+        type: number
+        format: double
+        default: 0.0
+      label:
+        anyOf:
+          - $ref: "#/$defs/Label"
+          - type: "null"
+      offsets:
+        description: Where inside the ring's thickness the fill sits. `None` fills it all.
+        anyOf:
+          - $ref: "#/$defs/Offsets"
+          - type: "null"
+    additionalProperties: false
+  Event:
+    type: object
+    properties:
+      date:
+        type: string
+        format: date
+      kind:
+        $ref: "#/$defs/Kind"
+        default: free
+      label:
+        type: string
+    additionalProperties: false
+    required:
+      - date
+      - label
+  Font:
+    type: object
+    properties:
+      family:
+        type: string
+        default: sans-serif
+      path:
+        description: |-
+          Explicit font file for SVG rasterisation. Falls back to `$WYCCA_FONT`,
+          then to whatever fontdb can find. The core never reads this.
+        type:
+          - string
+          - "null"
+      size:
+        description: Fraction of the canvas side, so the whole thing scales with `size`.
+        type: number
+        format: double
+        default: 0.02
+      weight:
+        type: integer
+        format: uint16
+        default: 400
+        maximum: 65535
+        minimum: 0
+    additionalProperties: false
+  Kind:
+    oneOf:
+      - description: "`TRANSP:TRANSPARENT`: a day off. This is what a holiday is."
+        type: string
+        const: free
+      - description: A day that is not free but is still a whole day we want on the ring.
+        type: string
+        const: busy
+  Label:
+    description: |-
+      What text a span carries, if any. The source decides the words; this decides
+      whether they are drawn, where across the ring, and which end they stand at.
+    type: object
+    properties:
+      anchor:
+        description: Along the span.
+        $ref: "#/$defs/Anchor"
+        default: start
+      at:
+        description: "Across the ring: inside the fill, on it, or past its far edge."
+        $ref: "#/$defs/Where"
+        default: in
+      color:
+        description: "Palette slot or `#rrggbb`."
+        type: string
+        default: foreground
+      size:
+        description: Multiple of the canvas `font.size`.
+        type: number
+        format: double
+        default: 1.0
+    additionalProperties: false
+  Layer:
+    description: |-
+      One thing a ring draws: where its spans come from, and how to draw them.
+      
+      A layer is one row of the config and one block of the form, so a new thing to
+      draw is a new variant here plus a block in `rings::spans` — there is no
+      per-layer-type drawing code anywhere else.
+    oneOf:
+      - description: |-
+          Spans a pattern generates. `amount` units long, starting `shift` units into
+          the unit's cycle and repeating every `every` units. `amount: 0` is an
+          instant: a tick, a marker, or somewhere to put a label. The defaults are
+          "every day", so a bare periodic layer is one span per day.
+        type: object
+        properties: 
+          amount:
+            type: integer
+            format: int64
+            default: 1
+          disp:
+            $ref: "#/$defs/Disp"
+            default:
+              gap: 0.0
+          every:
+            type: integer
+            format: int64
+            default: 1
+          kind:
+            type: string
+            const: periodic
+          shift:
+            $ref: "#/$defs/Shift"
+            default: 0
+          unit:
+            $ref: "#/$defs/Unit"
+            default: day
+        additionalProperties: false
+        required: 
+          - kind
+      - description: |-
+          Whole days from a named `.ics` feed. `only` narrows it to days off
+          (`free`) or days on (`busy`); unset draws both.
+        type: object
+        properties: 
+          disp:
+            $ref: "#/$defs/Disp"
+            default:
+              gap: 0.0
+          kind:
+            type: string
+            const: ics
+          only:
+            anyOf:
+              - $ref: "#/$defs/Kind"
+              - type: "null"
+            default: null
+          source:
+            type: string
+            default: ""
+        additionalProperties: false
+        required: 
+          - kind
+      - type: object
+        properties: 
+          disp:
+            $ref: "#/$defs/Disp"
+            default:
+              gap: 0.0
+          kind:
+            type: string
+            const: solar
+          what:
+            $ref: "#/$defs/Solar"
+            default: day
+        additionalProperties: false
+        required: 
+          - kind
+      - description: Where "now" is. An instant, like a tick, only it is you.
+        type: object
+        properties: 
+          disp:
+            $ref: "#/$defs/Disp"
+            default:
+              gap: 0.0
+          kind:
+            type: string
+            const: now
+        additionalProperties: false
+        required: 
+          - kind
+  Location:
+    description: |-
+      Where on the Earth. No platform will tell you this, so it is configuration.
+      Needed only for sunrise and sunset.
+    type: object
+    properties:
+      lat:
+        description: Degrees north, -90..90.
+        type: number
+        format: double
+      lon:
+        description: Degrees east, -180..180.
+        type: number
+        format: double
+    additionalProperties: false
+    required:
+      - lat
+      - lon
+  Offsets:
+    description: |-
+      Where a span's fill sits inside the ring's thickness. Both are trims: `inner`
+      is taken off the ring's inner edge and `outer` off its outer edge, as a
+      percentage of the ring's thickness. `0`/`0` is the whole ring, `55`/`0` is its
+      outer half, and a negative number goes past the edge — which is what a mark
+      that has to be seen from across the room does.
+    type: object
+    properties:
+      inner:
+        type: number
+        format: double
+        default: 0.0
+      outer:
+        type: number
+        format: double
+        default: 0.0
+    additionalProperties: false
+  Overrides:
+    description: Partial palette. `deny_unknown_fields` so a typo is a parse error, not silence.
+    type: object
+    properties:
+      accent:
+        type:
+          - string
+          - "null"
+        default: null
+      autumn:
+        type:
+          - string
+          - "null"
+        default: null
+      background:
+        type:
+          - string
+          - "null"
+        default: null
+      border:
+        type:
+          - string
+          - "null"
+        default: null
+      day:
+        type:
+          - string
+          - "null"
+        default: null
+      foreground:
+        type:
+          - string
+          - "null"
+        default: null
+      muted:
+        type:
+          - string
+          - "null"
+        default: null
+      night:
+        type:
+          - string
+          - "null"
+        default: null
+      solar:
+        type:
+          - string
+          - "null"
+        default: null
+      spring:
+        description: |-
+          By season name, so a layer can ask for `"winter"` the way it asks for
+          `"accent"`, and every slot is a field of its own rather than an index
+          into an array nobody can read.
+        type:
+          - string
+          - "null"
+        default: null
+      summer:
+        type:
+          - string
+          - "null"
+        default: null
+      week_marks:
+        type:
+          - string
+          - "null"
+        default: null
+      weekend:
+        type:
+          - string
+          - "null"
+        default: null
+      winter:
+        type:
+          - string
+          - "null"
+        default: null
+    additionalProperties: false
+  Ring:
+    description: "One ring: a scale, a place on the canvas, and the layers drawn on it."
+    type: object
+    properties:
+      layers:
+        type: array
+        default: []
+        items:
+          $ref: "#/$defs/Layer"
+      offset_deg:
+        type: number
+        format: double
+        default: 0.0
+      radius:
+        description: Pin the ring to an exact outer radius instead of letting `layout()` place it.
+        type:
+          - number
+          - "null"
+        format: double
+        default: null
+      reversed:
+        type: boolean
+        default: false
+      scale:
+        $ref: "#/$defs/Scale"
+      thickness:
+        type: number
+        format: double
+        default: 0.0
+    additionalProperties: false
+    required:
+      - scale
+  Scale:
+    description: |-
+      What one turn of a ring covers.
+      
+      Every angle on a ring is a fraction of its scale's current period, so layers
+      on one ring — and two rings of the same scale — can never disagree about
+      where anything sits.
+    oneOf:
+      - description: The current day, midnight to midnight.
+        type: string
+        const: hour24
+      - description: Monday to Monday.
+        type: string
+        const: week
+      - description: The first of the month to the first of the next.
+        type: string
+        const: month
+      - description: |-
+          The calendar year, January to January, so the seasons sit symmetric
+          about the cardinal axes with each season's three months inside its
+          quadrant and January at the top.
+        type: string
+        const: year
+  Shift:
+    description: |-
+      The phase a pattern starts at: an index into `unit`'s cycle, or the name of
+      one. `shift: sat` is a Saturday and `shift: dec` is a December; the numbers
+      stay for the units with no names, so `shift: 0` is midnight or January.
+      
+      Untagged on purpose: one field takes `5` and `"sat"` alike, which is what
+      lets a config say `shift: sat` while the page writes a plain number for an
+      hour.
+    anyOf:
+      - type: string
+      - type: integer
+        format: int64
+  Solar:
+    description: |-
+      The sun's own spans and instants. Nothing here is periodic: it needs a place
+      and a day.
+    oneOf:
+      - type: string
+        enum: 
+          - sunrise
+          - sunset
+          - equinox
+          - solstice
+      - description: Sunrise to sunset.
+        type: string
+        const: day
+      - description: Sunset to the next sunrise.
+        type: string
+        const: night
+  Theme:
+    type: string
+    enum:
+      - dark
+      - light
+  Unit:
+    description: |-
+      The unit a periodic pattern counts in.
+      
+      Each unit counts from its own epoch, chosen so that index zero is the phase
+      zero: midnight, midnight on a Monday, January 1970. That is what makes
+      `shift` mean the same thing on every ring — a weekday on a day ring is still
+      a Saturday on a year ring, because both count from the same Monday.
+    oneOf:
+      - type: string
+        enum: 
+          - year
+          - month
+          - week
+          - hour
+          - minute
+      - description: The default, because a bare periodic layer is one span per day.
+        type: string
+        const: day
+  Where:
+    description: |-
+      Where a label sits against a fill: `in` is inside its near edge, `at` is on
+      it, `out` is past its far edge.
+    type: string
+    enum:
+      - in
+      - at
+      - out

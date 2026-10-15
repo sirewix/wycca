@@ -130,10 +130,17 @@ rings together. Setting a ring's `radius` pins it and skips the layout.
   `day`/`night` are the lit and dark halves of the hour ring — each one is the
   background colour on one theme and the opposite on the other, so the dark half
   of the clock reads as dark on either. Nothing else may borrow those.
-  Every event is `weekend` red, free or busy; the mark's length is what says which.
+  Every event is `weekend` red, like a weekend: a sector, not a mark.
 - `deny_unknown_fields` on every config struct, on the `Layer` enum too: a typo
   must be a parse error. It sits next to the serde field defaults on purpose —
   `{"amount": 1, "amoun": 2}` is a typo, not a request for the default.
+  `config.schema.yaml` is what makes an editor agree, and it is generated rather
+  than written: the `schema` feature derives it from the same structs, off by
+  default because the derive drags the schema generator into a wasm whose bytes
+  are counted. One test writes the file and fails if it was stale. It is a JSON
+  Schema, serialised as YAML because a person reads it — which is also why the
+  editor needs to be *told* about it: the `foo.schema.json` convention that
+  auto-associates a schema with `foo.json` does not survive the extension.
 - **A colour is a palette slot name or a `#rrggbb`, never a field of its own.**
   `Palette::color` resolves one string, so `background: weekend` follows the
   theme and `background: "#800000"` does not, with no extra config surface. Every
@@ -153,12 +160,16 @@ nix develop                 # cargo, clippy, rustfmt, feh, a font for resvg
 nix develop -c cargo test
 nix develop -c cargo clippy --all-targets -- -D warnings
 nix develop -c cargo fmt
-nix run . -- -c wycca.yaml --events holidays-kz.ics --png wall.png
+nix run . -- -c wycca.yaml --events holidays-uk.ics --png wall.png
 wycca -a 2026-10-13T14:30:00+02:00   # deterministic, for eyeballing
 wycca -f                              # render a PNG and open it in feh
+
+cargo test -p wycca-core --features schema   # rewrites config.schema.yaml
 ```
 
-The browser page is a file, not a server. Open it directly:
+The browser page is a file, not a server. `nix build .#web` is the same thing
+`web/release.sh` builds, for a user with nix and no toolchain; open either one
+directly:
 
 ```sh
 nix develop -c web/build.sh   # cargo -> base64 -> web/wycca.wasm.js
@@ -183,11 +194,11 @@ already. ASCII-art downsampling is fine for a quick shape check.
 
 ## Local files, gitignored
 
-`wycca.yaml` is the user's config and `holidays-kz.ics` a Google holiday calendar.
+`wycca.yaml` is the user's config and `holidays-uk.ics` a Google holiday calendar.
 Refresh the calendar with:
 
 ```sh
-curl -o holidays-kz.ics "https://calendar.google.com/calendar/ical/en-gb.kz%23holiday%40group.v.calendar.google.com/public/basic.ics"
+curl -o holidays-uk.ics "https://calendar.google.com/calendar/ical/en-gb.uk%23holiday%40group.v.calendar.google.com/public/basic.ics"
 ```
 
 Config is JSON in the core, YAML in the CLI (`.yaml`/`.yml` by extension). YAML is
@@ -199,13 +210,16 @@ there do comments earn their keep.
 - **Holidays come from `.ics`, never from a hardcoded country table.** Google's
   per-country calendars (`.../calendar/ical/<cc>#holiday@group.v.calendar.google.com/public/basic.ics`)
   are free, need no key, run to 2031, and model *transferred days off*
-  (`Day off for Nauryz`), which the usual APIs do not. Nager.Date was checked and
-  rejected for KZ: it returns a byte-identical list for every year, missing
-  Orthodox Christmas and Children's Day, with Nauryz and May 1 wrong before 2025.
+  (`Substitute Bank Holiday for Boxing Day`), which the usual APIs do not.
+  Nager.Date was checked against one of these feeds and rejected: it returns a
+  byte-identical list for every year, dropping observance days and getting some
+  dates wrong before 2025.
 - **Whole-day events only.** `DTSTART;VALUE=DATE` is the test for "whole day";
   anything with a time is skipped because a ring has no room for one.
-  `TRANSP:TRANSPARENT` is the test for "a day off", and a free event draws a full
-  crossing line while a busy one draws a short notch. `Config::feeds` is a name to
+  `TRANSP:TRANSPARENT` is the test for "a day off" and `only` is the config's way
+  of asking for one. An event is a `weekend`-red sector, like a weekend: one day
+  across the ring, no label — the names run into the month numbers on a ring that
+  thin. `Config::feeds` is a name to
   days map, so a layer can read one and `--events` has somewhere to put it: it
   lands in `DEFAULT_FEED`, the feed the year ring's holidays layer already names.
 - **The config UI is described by the core, never implemented by it.** `ui.rs`
@@ -234,7 +248,9 @@ there do comments earn their keep.
   (120 KB), and gzip is what nginx sends, so they are off; do not "fix" that by
   adding `-Oz` back without re-measuring. The output is `web/dist/`, which has no
   `wycca.wasm.js`: the base64 copy is for a page opened from disk, and a deployed
-  page fetches its wasm like any other asset.
+  page fetches its wasm like any other asset. `nix build .#web` does the same
+  work and repeats those `wasm-opt` flags verbatim, so a change to one is a
+  change to both.
 - **What the wasm's size is made of, now that it has been looked at.** Rust's
   `core::fmt` for `format!("{x:.2}")` in `geom.rs`/`svg.rs`, serde's derive tables
   and error strings, chrono's `format`/`parse` module (pulled in by its `serde`
@@ -252,7 +268,7 @@ there do comments earn their keep.
   offline from a file, and the widget has no DOM at all; the core already reads
   `#rrggbb`, so nothing needs to understand a colour space.
 - **The timezone picker is platform glue, not part of the form.** Resolving
-  `Europe/Almaty` to an offset needs a tz database and `chrono-tz` is banned, so
+  `Europe/London` to an offset needs a tz database and `chrono-tz` is banned, so
   `ui.js` reads `Intl.supportedValuesOf("timeZone")` and recomputes the offset each
   frame (which is also how daylight saving follows). Android will do the same with
   `TimeZone`. Fifteen lines per platform beats the dependency.
